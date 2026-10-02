@@ -138,19 +138,27 @@
     border-right: 1px solid var(--g-line, var(--line)); border-bottom: 1px solid var(--g-line, var(--line));
   }
   #grid thead th {
-    position: sticky; z-index: 3; text-align: center;
+    position: sticky; z-index: 3; text-align: var(--g-head-align, center);
     background: var(--g-head-bg, var(--head)); color: var(--g-head-ink, var(--ink)); font-weight: var(--g-head-w, 600);
+    font-style: var(--g-head-i, normal); text-decoration: var(--g-head-u, none);
   }
-  #grid thead th.corner { z-index: 5; text-align: right; font-weight: 400; }
+  #grid thead th.corner {
+    z-index: 5; text-align: right; color: var(--g-field-ink, var(--ink));
+    font-weight: var(--g-field-w, 400); font-style: var(--g-field-i, normal); text-decoration: var(--g-field-u, none);
+  }
   #grid thead th.rlabel { text-align: left; }
   #grid thead tr.lrow th { border-bottom-color: var(--g-line-strong, var(--line-strong)); }
   #grid th.lfill { z-index: 3; }
   #grid tbody th {
-    position: sticky; z-index: 2; text-align: left; vertical-align: top;
+    position: sticky; z-index: 2; text-align: var(--g-rh-align, left); vertical-align: top;
     background: var(--g-rh-bg, var(--bg)); color: var(--g-rh-ink, var(--ink)); font-weight: var(--g-rh-w, 400);
+    font-style: var(--g-rh-i, normal); text-decoration: var(--g-rh-u, none);
   }
   #grid .last { border-right-color: var(--g-line-strong, var(--line-strong)); }
-  #grid td { text-align: var(--g-num-align, right); }
+  #grid td {
+    text-align: var(--g-num-align, right);
+    font-weight: var(--g-cell-w, 400); font-style: var(--g-cell-i, normal); text-decoration: var(--g-cell-u, none);
+  }
   #grid tbody tr.odd > td { background: var(--g-band, var(--band)); }
   #grid tbody tr.gb > * { border-top: 1px solid var(--g-line-strong, var(--line-strong)); }
   #grid .gc { box-shadow: inset 1px 0 0 var(--g-line-strong, var(--line-strong)); }
@@ -159,9 +167,11 @@
   #grid th.ch .stick { position: sticky; left: calc(var(--lsum, 0px) + 9px); }
   #grid thead th.tot, #grid tbody tr.tot > td, #grid tbody tr > td.tot, #grid tbody tr.tot > th.tl {
     background: var(--g-sub-bg, #eef4f7); color: var(--g-sub-ink, var(--ink)); font-weight: var(--g-sub-w, 600);
+    font-style: var(--g-sub-i, normal); text-decoration: var(--g-sub-u, none);
   }
   #grid thead th.grand, #grid tbody tr.grand > td, #grid tbody tr > td.grand, #grid tbody tr.grand > th.tl {
     background: var(--g-grand-bg, #e2edf2); color: var(--g-grand-ink, var(--ink)); font-weight: var(--g-grand-w, 600);
+    font-style: var(--g-grand-i, normal); text-decoration: var(--g-grand-u, none);
   }
 
   .sort {
@@ -205,6 +215,16 @@
   .fp-field { display: grid; grid-template-columns: 110px 1fr; gap: 8px; align-items: center; padding: 3px 12px; }
   .fp-field input[type=color] { width: 44px; height: 23px; padding: 1px; border: 1px solid var(--line-strong); border-radius: 3px; background: var(--bg); cursor: pointer; }
   .fp-field input[type=checkbox] { justify-self: start; }
+  .fp-style { display: flex; gap: 4px; }
+  .fp-style label { position: relative; }
+  .fp-style input { position: absolute; opacity: 0; width: 1px; height: 1px; }
+  .fp-style span {
+    display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 23px;
+    border: 1px solid var(--line-strong); border-radius: 3px; background: var(--bg); color: var(--ink); cursor: pointer;
+    font: 13px/1 Georgia, "Times New Roman", serif;
+  }
+  .fp-style input:checked + span { background: #e8f2f7; border-color: var(--dim); color: var(--dim-d); }
+  .fp-style input:focus-visible + span { outline: 2px solid var(--drop); outline-offset: 1px; }
   .fp-hint { padding: 0 12px 2px 130px; color: var(--ink-2); font-size: 11px; }
   .fp-foot { display: flex; gap: 6px; justify-content: flex-end; padding: 8px 10px; border-top: 1px solid var(--line); }
   .fp-foot .left { margin-right: auto; }
@@ -275,7 +295,7 @@
       <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path d="M6 1.5v6.5M3.3 5.5 6 8.2l2.7-2.7M1.5 10.5h9" fill="none" stroke="currentColor" stroke-width="1.3"/></svg>
       <span>Export to Excel</span>
     </button>
-    <button class="tool" id="btnFormat" hidden title="Fonts, colours and spacing of the grid">
+    <button class="tool" id="btnFormat" hidden title="Format the grid (local preview only; in Tableau use Format Extension on the Marks card)">
       <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path d="M2 10.5 6 1.5l4 9M3.4 7.3h5.2" fill="none" stroke="currentColor" stroke-width="1.3"/></svg>
       <span>Format</span>
     </button>
@@ -362,11 +382,13 @@ const PARAM_NONE   = ["none", "(none)", "- none -", "-", "", "n/a"];
 // Grid formatting. The author changes these in the Format panel; they're saved with the workbook.
 const DEFAULT_FORMAT = {
   fontFamily: "", fontSize: 12, textColor: "#33393f",
-  headerBg: "#fafbfb", headerColor: "#33393f", headerBold: true,
-  rowHeaderBg: "#ffffff", rowHeaderColor: "#33393f", rowHeaderBold: false,
-  cellBg: "#ffffff", banding: true, bandColor: "#f6f7f8", numberAlign: "right", density: "normal",
-  subtotalBg: "#eef4f7", subtotalColor: "#33393f", subtotalBold: true,
-  grandBg: "#e2edf2", grandColor: "#33393f", grandBold: true,
+  fieldColor: "#33393f", fieldBold: false, fieldItalic: false, fieldUnderline: false,
+  headerBg: "#fafbfb", headerColor: "#33393f", headerBold: true, headerItalic: false, headerUnderline: false, headerAlign: "center",
+  rowHeaderBg: "#ffffff", rowHeaderColor: "#33393f", rowHeaderBold: false, rowHeaderItalic: false, rowHeaderUnderline: false, rowHeaderAlign: "left",
+  cellBg: "#ffffff", cellBold: false, cellItalic: false, cellUnderline: false,
+  banding: true, bandColor: "#f6f7f8", numberAlign: "right", density: "normal",
+  subtotalBg: "#eef4f7", subtotalColor: "#33393f", subtotalBold: true, subtotalItalic: false, subtotalUnderline: false,
+  grandBg: "#e2edf2", grandColor: "#33393f", grandBold: true, grandItalic: false, grandUnderline: false,
   lineColor: "#e4e7ea", dividerColor: "#c4cad0",
   paramMap: {}   // field id -> parameter name that names it; NO_PARAM = don't rename
 };
@@ -1161,14 +1183,18 @@ document.addEventListener("keydown", e => {
 /* ---------- format panel (author only; saved in the workbook's extension settings) ---------- */
 const FONTS = ["Noto Sans", "Benton Sans", "Tableau Book", "Tableau Regular", "Segoe UI", "Arial", "Calibri", "Helvetica Neue",
   "Verdana", "Tahoma", "Trebuchet MS", "Georgia", "Times New Roman", "Consolas"];
+const ALIGN = ["left", "center", "right"];
 const FORMAT_FORM = [
   ["Text", [["fontFamily", "Font", "font"], ["fontSize", "Size (px)", "size"], ["textColor", "Colour", "color"]]],
-  ["Column headers", [["headerBg", "Background", "color"], ["headerColor", "Text", "color"], ["headerBold", "Bold", "bool"]]],
-  ["Row labels", [["rowHeaderBg", "Background", "color"], ["rowHeaderColor", "Text", "color"], ["rowHeaderBold", "Bold", "bool"]]],
-  ["Cells", [["cellBg", "Background", "color"], ["banding", "Row banding", "bool"], ["bandColor", "Band colour", "color"],
-    ["numberAlign", "Numbers", ["left", "center", "right"]], ["density", "Spacing", ["compact", "normal", "roomy"]]]],
-  ["Subtotals", [["subtotalBg", "Background", "color"], ["subtotalColor", "Text", "color"], ["subtotalBold", "Bold", "bool"]]],
-  ["Grand totals", [["grandBg", "Background", "color"], ["grandColor", "Text", "color"], ["grandBold", "Bold", "bool"]]],
+  ["Field names", [["fieldColor", "Text", "color"], ["field", "Style", "style"]]],
+  ["Column headers", [["headerBg", "Background", "color"], ["headerColor", "Text", "color"], ["header", "Style", "style"],
+    ["headerAlign", "Alignment", ALIGN]]],
+  ["Row labels", [["rowHeaderBg", "Background", "color"], ["rowHeaderColor", "Text", "color"], ["rowHeader", "Style", "style"],
+    ["rowHeaderAlign", "Alignment", ALIGN]]],
+  ["Cells", [["cellBg", "Background", "color"], ["cell", "Style", "style"], ["banding", "Row banding", "bool"],
+    ["bandColor", "Band colour", "color"], ["numberAlign", "Alignment", ALIGN], ["density", "Spacing", ["compact", "normal", "roomy"]]]],
+  ["Subtotals", [["subtotalBg", "Background", "color"], ["subtotalColor", "Text", "color"], ["subtotal", "Style", "style"]]],
+  ["Grand totals", [["grandBg", "Background", "color"], ["grandColor", "Text", "color"], ["grand", "Style", "style"]]],
   ["Lines", [["lineColor", "Grid lines", "color"], ["dividerColor", "Group dividers", "color"]]]
 ];
 const HEX = /^#[0-9a-f]{6}$/i;
@@ -1188,22 +1214,32 @@ function cleanFormat(f) {
     else if (/Bg$|Color$/.test(key)) { if (HEX.test(v)) out[key] = v; }
     else if (typeof v === "string") out[key] = v.replace(/[^\p{L}\p{N} ._()-]/gu, "").slice(0, 60);
   }
-  if (!["left", "center", "right"].includes(out.numberAlign)) out.numberAlign = DEFAULT_FORMAT.numberAlign;
+  for (const k of ["numberAlign", "headerAlign", "rowHeaderAlign"]) if (!ALIGN.includes(out[k])) out[k] = DEFAULT_FORMAT[k];
   if (!["compact", "normal", "roomy"].includes(out.density)) out.density = DEFAULT_FORMAT.density;
   return out;
 }
 function applyFormat(f) {
   const s = document.documentElement.style;
   const set = (k, v) => s.setProperty(k, v);
+  // One area's bold / italic / underline, e.g. style("--g-head", "header").
+  const style = (v, p) => {
+    set(v + "-w", f[p + "Bold"] ? 600 : 400);
+    set(v + "-i", f[p + "Italic"] ? "italic" : "normal");
+    set(v + "-u", f[p + "Underline"] ? "underline" : "none");
+  };
   set("--g-font", f.fontFamily ? `"${f.fontFamily}", var(--font)` : "var(--font)");
   set("--g-size", f.fontSize + "px");
   set("--g-ink", f.textColor);
   set("--g-bg", f.cellBg);
   set("--g-band", f.banding ? f.bandColor : f.cellBg);
-  set("--g-head-bg", f.headerBg); set("--g-head-ink", f.headerColor); set("--g-head-w", f.headerBold ? 600 : 400);
-  set("--g-rh-bg", f.rowHeaderBg); set("--g-rh-ink", f.rowHeaderColor); set("--g-rh-w", f.rowHeaderBold ? 600 : 400);
-  set("--g-sub-bg", f.subtotalBg); set("--g-sub-ink", f.subtotalColor); set("--g-sub-w", f.subtotalBold ? 600 : 400);
-  set("--g-grand-bg", f.grandBg); set("--g-grand-ink", f.grandColor); set("--g-grand-w", f.grandBold ? 600 : 400);
+  set("--g-field-ink", f.fieldColor); style("--g-field", "field");
+  set("--g-head-bg", f.headerBg); set("--g-head-ink", f.headerColor); style("--g-head", "header");
+  set("--g-head-align", f.headerAlign);
+  set("--g-rh-bg", f.rowHeaderBg); set("--g-rh-ink", f.rowHeaderColor); style("--g-rh", "rowHeader");
+  set("--g-rh-align", f.rowHeaderAlign);
+  style("--g-cell", "cell");
+  set("--g-sub-bg", f.subtotalBg); set("--g-sub-ink", f.subtotalColor); style("--g-sub", "subtotal");
+  set("--g-grand-bg", f.grandBg); set("--g-grand-ink", f.grandColor); style("--g-grand", "grand");
   set("--g-line", f.lineColor); set("--g-line-strong", f.dividerColor);
   set("--g-num-align", f.numberAlign);
   set("--g-pad", { compact: "1px 6px", normal: "3px 9px", roomy: "6px 12px" }[f.density]);
@@ -1222,11 +1258,18 @@ const canFormat = () => LOCAL || (typeof tableau !== "undefined" && tableau.exte
 function openFormat() {
   if (!canFormat()) return;
   savedFormat = { ...format };
-  const field = ([key, label, kind]) => {
+  const field = ([key, label, kind], section) => {
     const v = format[key], id = "fp-" + key;
     let input;
     if (kind === "color") input = `<input type="color" id="${id}" data-k="${key}" value="${esc(v)}">`;
     else if (kind === "bool") input = `<input type="checkbox" id="${id}" data-k="${key}"${v ? " checked" : ""}>`;
+    else if (kind === "style") {
+      const btn = (suffix, glyph, name) => `<label title="${name}"><input type="checkbox" data-k="${key + suffix}"` +
+        `${format[key + suffix] ? " checked" : ""} aria-label="${section} ${name.toLowerCase()}"><span style="${glyph[1]}">${glyph[0]}</span></label>`;
+      return `<div class="fp-field"><span>${label}</span><span class="fp-style">` +
+        btn("Bold", ["B", "font-weight:700"], "Bold") + btn("Italic", ["I", "font-style:italic"], "Italic") +
+        btn("Underline", ["U", "text-decoration:underline"], "Underline") + `</span></div>`;
+    }
     else if (kind === "size") input = `<input type="number" id="${id}" data-k="${key}" min="8" max="32" value="${esc(v)}">`;
     else if (kind === "font") input = `<input type="text" id="${id}" data-k="${key}" list="fpFonts" placeholder="Tableau default" value="${esc(v)}">`;
     else if (Array.isArray(kind)) input = `<select id="${id}" data-k="${key}">${kind.map(o => `<option${o === v ? " selected" : ""}>${o}</option>`).join("")}</select>`;
@@ -1246,7 +1289,7 @@ function openFormat() {
       (others.length ? `<optgroup label="Other parameters">${others.map(p => opt([p.name, p.name])).join("")}</optgroup>` : "") +
       opt([NO_PARAM, "Don't rename"]) + `</select></label>`;
   }).join("") || `<div class="fp-hint" style="padding-left:12px">No Grid Level or Metric Selector fields on this sheet.</div>`);
-  $("fpBody").innerHTML = FORMAT_FORM.map(([title, fields]) => `<h4>${title}</h4>` + fields.map(field).join("")).join("") +
+  $("fpBody").innerHTML = FORMAT_FORM.map(([title, fields]) => `<h4>${title}</h4>` + fields.map(f => field(f, title)).join("")).join("") +
     paramSection +
     `<datalist id="fpFonts">${FONTS.map(f => `<option value="${f}">`).join("")}</datalist>`;
   $("formatPanel").hidden = false;
@@ -1750,7 +1793,6 @@ function diag() {
   try { format = cleanFormat(JSON.parse(tableau.extensions.settings.get("format") || "{}")); }
   catch (e) { format = { ...DEFAULT_FORMAT }; }
   applyFormat(format);
-  $("btnFormat").hidden = !canFormat();
   worksheet.addEventListener(tableau.TableauEventType.SummaryDataChanged, refreshFromTableau);
   refreshFromTableau();
 })();
