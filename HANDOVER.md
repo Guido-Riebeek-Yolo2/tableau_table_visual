@@ -30,7 +30,7 @@ tableau.extensions.1.latest.min.js  Extensions API library, version 1.17 (from t
 HANDOVER.md                         This file
 ```
 
-Repo: `https://github.com/Guido-Riebeek-Yolo2/tableau_table_visual`, served by GitHub Pages from `main` / root. If the library is missing, the page falls back to demo data and shows a red notice.
+Repo: `https://github.com/Guido-Riebeek-Yolo2/tableau_table_visual`, served by GitHub Pages from `main` / root. Demo data only appears in a local preview (`file://` or localhost). Hosted, a missing library or failed connection shows an error instead.
 
 Reference files from the original export module, which live in the project root and not in `pivot-grid/`:
 
@@ -80,8 +80,9 @@ model = {
 layout = { rows: [ids], cols: [ids], measures: [measure ids, display order], hidden: [measure ids], removed: [dim ids] }
 ```
 
-- Dims not on `rows` or `cols` show in the field list on the left. `removed` remembers dims the viewer took off the grid, so a refresh doesn't put them back.
-- Dims on the author's **Fields** tile start in the field list.
+- Dims not on `rows` or `cols`, and measures not in `measures`, show in the field list on the left. `removed` remembers dims and measures the viewer took off the grid, so a refresh doesn't put them back.
+- Fields on the author's **Fields** tile start in the field list. That tile accepts dimensions and measures; a name with an aggregation (`SUM(x)`, `CNTD(x)`...) is treated as a measure.
+- The field list folds to a 28px strip with its arrow button. Dropping on the strip still removes a field.
 
 - `MEAS = "__measures__"` is the Measure Names pseudo-field. It can sit at any position on either axis.
 - `defaultLayout()` builds the author's layout from the encodings. It places `MEAS` according to `DEFAULT_MEASURES_AXIS` and `DEFAULT_MEASURES_AT`.
@@ -109,7 +110,7 @@ The table is built as one HTML string:
 ### 4.5 Drag and drop
 
 - The drag engine uses pointer events, not HTML5 drag-and-drop, so it behaves the same in Tableau Desktop's browser, on Server/Cloud and on touch screens.
-- Any element with `data-drag` (the field id) and `data-kind` can be dragged. `dim` and `meas` items go to rows or cols; `dim` items can also go to the field list (`avail` zone). `measure` items can only be reordered within the Values shelf.
+- Any element with `data-drag` (the field id) and `data-kind` can be dragged. `dim` and `meas` items go to rows or cols; `dim` items can also go to the field list (`avail` zone). `measure` items reorder within the Values shelf, go to the field list, or (from the list) drop anywhere on the grid to join Values.
 - A drag starts after 4px of movement. Without that movement it counts as a click, and clicking a measure pill toggles it hidden.
 - `zones(kind)` is recomputed on every pointer move, so scrolling mid-drag works. The zones are:
   - the shelves, with pills laid out as `dir: "wrap"`;
@@ -121,7 +122,7 @@ The table is built as one HTML string:
 
 ### 4.6 Tableau integration
 
-- `init()` uses demo data if `?demo=1` is set, if the library is missing, or if `initializeAsync` takes longer than `INIT_TIMEOUT_S` (8 seconds). If `worksheetContent` is missing, the page shows "Add this as a viz extension", because it was loaded as a dashboard extension.
+- `init()` uses demo data only when running locally (`file://` or localhost) and `?demo=1` is set, the library is missing, or `initializeAsync` takes longer than `INIT_TIMEOUT_S`. When hosted it never shows demo data: it shows "Still connecting to Tableau…" after the timeout but keeps waiting, and shows an error if the library is missing or initialisation fails. If `worksheetContent` is missing, the page shows "Add this as a viz extension", because it was loaded as a dashboard extension.
 - `loadFromTableau()` works in this order:
   1. Calls `getVisualSpecificationAsync()`, takes `marksSpecifications[activeMarksSpecificationIndex].encodings`, and maps each `e.id` to an axis through `ENC_AXIS`.
   2. Reads the summary data with `getSummaryDataReaderAsync(undefined, { ignoreSelection: true, applyWorksheetFormatting: true })` and `getAllPagesAsync()`, always calling `releaseAsync()` afterwards.
@@ -131,12 +132,14 @@ The table is built as one HTML string:
 
 ## 5. Unverified against real Tableau (check these first)
 
-None of this has run inside Tableau yet. Only demo mode has been tested.
+None of this has run inside Tableau yet. Demo mode and a mock worksheet shaped like the real API have been tested.
 
-1. **Encoding field name vs. summary column name.** We assume `encodings[].field.name` matches `columns[].fieldName`, give or take aggregation. Check with `?debug=1`. If they differ, `encodings[].field` may have other properties to match on, such as an id or caption. Log the whole object.
+Verified against Tableau's docs and samples: encodings are `{ id, field: { name } }` and the ConnectedScatterplot sample indexes summary data by `columns[].fieldName === encoding.field.name`. A role-spec can list several role types. At most four custom encodings are allowed, and we use all four. `getAllPagesAsync` stops at 400 pages and pads the array with empty slots; the code filters those out and warns.
+
+1. **Encoding field name vs. summary column name.** Expected to match exactly per the sample. Check with `?debug=1`, which also logs the raw `encodings[].field` objects.
 2. **Encoding structure.** We assume several fields on one tile appear as several entries with the same `id`, in tile order. Verify, especially that the order matches the tile.
 3. **Manifest.** Check that the `role-type` values `discrete-dimension` and `continuous-measure`, `<fields max-count>`, and `min-api-version 1.11` are accepted. Compare with Tableau's official viz extension samples, such as the Sankey sample in the `tableau/extensions-api` GitHub repo.
-4. **Init detection in Desktop.** The 8-second timeout fallback could trigger by mistake on a slow Server, so it may need raising.
+4. **Init in Desktop.** On a slow Server the "Still connecting" hint may appear before data loads; it clears itself once Tableau responds.
 5. **Summary data order and nulls.** Check how Null members and aliases come through. Members are keyed by `formattedValue`.
 6. **Whether `applyWorksheetFormatting: true` behaves as expected for viz extensions.**
 

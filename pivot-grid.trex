@@ -43,6 +43,7 @@
       <display-name resource-id="enc_fields">Fields</display-name>
       <role-spec>
         <role-type>discrete-dimension</role-type>
+        <role-type>continuous-measure</role-type>
       </role-spec>
       <fields max-count="30"/>
     </encoding>

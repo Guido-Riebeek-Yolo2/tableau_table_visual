@@ -77,7 +77,19 @@
   }
   #side[hidden] { display: none; }
   #side.over { background: #fdf6f0; }
-  .side-head { padding: 8px 10px 2px; color: var(--ink-2); }
+  .side-head { display: flex; align-items: center; justify-content: space-between; gap: 4px; padding: 5px 4px 2px 10px; color: var(--ink-2); }
+  .side-toggle {
+    flex: none; width: 20px; height: 20px; padding: 0; border: 0; border-radius: 3px;
+    background: transparent; color: var(--ink-2); cursor: pointer;
+    display: inline-flex; align-items: center; justify-content: center;
+  }
+  .side-toggle:hover { background: var(--line); color: var(--ink); }
+  .side-toggle:focus-visible { outline: 2px solid var(--drop); outline-offset: 1px; }
+  #side.folded { width: 28px; cursor: pointer; }
+  #side.folded .side-head { flex-direction: column-reverse; justify-content: flex-end; padding: 5px 0; gap: 8px; }
+  #side.folded .side-title { writing-mode: vertical-rl; }
+  #side.folded .side-toggle svg { transform: rotate(180deg); }
+  #side.folded #pillsAvail { display: none; }
   #pillsAvail { flex-direction: column; flex-wrap: nowrap; align-items: stretch; padding: 5px 8px 10px; }
   #pillsAvail .pill { overflow: hidden; text-overflow: ellipsis; display: block; line-height: 21px; }
   #pillsAvail .ph { white-space: normal; padding: 2px; }
@@ -189,7 +201,12 @@
   <div id="notice"></div>
   <div id="main">
     <aside id="side" aria-label="Field list" hidden>
-      <div class="side-head">Fields</div>
+      <div class="side-head">
+        <span class="side-title">Fields</span>
+        <button class="side-toggle" id="btnSide" aria-expanded="true" title="Collapse the field list">
+          <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path d="M7.5 2.5 4 6l3.5 3.5" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>
+        </button>
+      </div>
       <div class="pills" id="pillsAvail"></div>
     </aside>
     <div id="gridWrap"><table id="grid"></table></div>
@@ -211,7 +228,7 @@ const ENC_AXIS = { rows: "rows", columns: "cols", values: "values", fields: "fie
 // How a measure combines when one grid cell covers several rows of data
 // (a field is in the field list instead of on the grid). Any other
 // aggregation (AVG, COUNTD, MEDIAN, AGG of a calc...) is left blank, never guessed.
-const COMBINE_RULE = { SUM: "sum", COUNT: "sum", MIN: "min", MAX: "max" };
+const COMBINE_RULE = { SUM: "sum", COUNT: "sum", CNT: "sum", MIN: "min", MAX: "max" };
 
 // Where the Measure Names pill starts out when the author hasn't moved it:
 // "cols" or "rows", and its position on that axis (0 = outermost, -1 = innermost).
@@ -219,7 +236,8 @@ const COMBINE_RULE = { SUM: "sum", COUNT: "sum", MIN: "min", MAX: "max" };
 const DEFAULT_MEASURES_AXIS = "cols";
 const DEFAULT_MEASURES_AT   = 0;
 
-// Seconds to wait for Tableau before falling back to demo data.
+// Seconds before telling the user we're still waiting for Tableau.
+// When opened locally (file:// or localhost) it falls back to demo data instead.
 const INIT_TIMEOUT_S = 8;
 
 /* ============================================================ */
@@ -227,12 +245,13 @@ const INIT_TIMEOUT_S = 8;
 const MEAS = "__measures__";
 const $ = id => document.getElementById(id);
 const qs = new URLSearchParams(location.search);
+const LOCAL = location.protocol === "file:" || /^(localhost|127\.0\.0\.1)$/.test(location.hostname);
 if (qs.get("debug") === "1") document.body.classList.add("debug");
 
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c =>
   ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const norm = s => String(s || "").replace(/[\s\u00A0]+/g, " ").trim().toLowerCase();
-const AGG_RE  = /^(SUM|AVG|MIN|MAX|COUNT|COUNTD|MEDIAN|ATTR|AGG|STDEV|STDEVP|VAR|VARP|PERCENTILE)\((.*)\)$/i;
+const AGG_RE  = /^(SUM|AVG|MIN|MAX|COUNT|COUNTD|CNT|CNTD|MEDIAN|ATTR|AGG|STDEV|STDEVP|VAR|VARP|PERCENTILE|PCT\d+)\((.*)\)$/i;
 const DATE_RE = /^(YEAR|QUARTER|MONTH|WEEK|DAY|WEEKDAY|MY|QY|MDY|HOUR|MINUTE)\((.*)\)$/i;
 const DATE_WORD = { YEAR: "Year", QUARTER: "Quarter", MONTH: "Month", WEEK: "Week", DAY: "Day",
   WEEKDAY: "Weekday", MY: "Month", QY: "Quarter", MDY: "Day", HOUR: "Hour", MINUTE: "Minute" };
@@ -293,8 +312,8 @@ function inferFormat(cells) {
 
 /* ============================================================
    MODEL
-   dims:     [{ id, label, col, axis }]  axis = author's starting axis
-   measures: [{ id, label, col }]
+   dims:     [{ id, label, col, axis }]  axis = author's tile: "rows" | "cols" | "fields"
+   measures: [{ id, label, col, axis }]  axis = "values" | "fields"
    data:     rows of cells { f: formatted text, s: sort key }
    ============================================================ */
 function buildModel({ dims, measures, data }) {
@@ -331,25 +350,29 @@ function defaultLayout() {
     const at = DEFAULT_MEASURES_AT < 0 ? list.length : Math.min(DEFAULT_MEASURES_AT, list.length);
     list.splice(at, 0, MEAS);
   }
-  return { rows, cols, measures: model.measures.map(m => m.id), hidden: [], removed: [] };
+  return { rows, cols, measures: model.measures.filter(m => m.axis !== "fields").map(m => m.id), hidden: [], removed: [] };
 }
 
 // Keeps the user's arrangement when the data refreshes; fields the author
 // added or moved to another tile since go to their starting place, removed fields drop out.
+// `removed` holds dims and measures the viewer moved to the field list.
 function reconcile(old, prev) {
   const def = defaultLayout();
   if (!old) return def;
-  const prevAxis = new Map(prev ? prev.dims.map(d => [d.id, d.axis]) : []);
-  const authorMoved = new Set(model.dims.filter(d => prevAxis.has(d.id) && prevAxis.get(d.id) !== d.axis).map(d => d.id));
+  const all = [...model.dims, ...model.measures];
+  const prevAxis = new Map(prev ? [...prev.dims, ...prev.measures].map(f => [f.id, f.axis]) : []);
+  const authorMoved = new Set(all.filter(f => prevAxis.has(f.id) && prevAxis.get(f.id) !== f.axis).map(f => f.id));
   const dimIds = new Set(model.dims.map(d => d.id));
-  const keep = id => id === MEAS ? model.measures.length > 0 : dimIds.has(id) && !authorMoved.has(id);
-  const rows = old.rows.filter(keep), cols = old.cols.filter(keep), removed = old.removed.filter(keep);
-  const placed = new Set([...rows, ...cols, ...removed]);
+  const keepDim = id => id === MEAS ? model.measures.length > 0 : dimIds.has(id) && !authorMoved.has(id);
+  const keepMeas = id => model.measById.has(id) && !authorMoved.has(id);
+  const rows = old.rows.filter(keepDim), cols = old.cols.filter(keepDim);
+  const measures = old.measures.filter(keepMeas);
+  const removed = old.removed.filter(id => keepDim(id) || keepMeas(id));
+  const placed = new Set([...rows, ...cols, ...measures, ...removed]);
   def.rows.forEach(id => { if (!placed.has(id)) rows.push(id); });
   def.cols.forEach(id => { if (!placed.has(id)) cols.push(id); });
-  const measures = old.measures.filter(id => model.measById.has(id));
-  model.measures.forEach(m => { if (!measures.includes(m.id)) measures.push(m.id); });
-  const hidden = old.hidden.filter(id => model.measById.has(id));
+  def.measures.forEach(id => { if (!placed.has(id)) measures.push(id); });
+  const hidden = old.hidden.filter(id => measures.includes(id));
   return { rows, cols, measures, hidden, removed };
 }
 
@@ -513,7 +536,9 @@ function render() {
   measureSticky();
 
   const blank = vis.filter(m => view.blanked.has(m.id)).map(m => m.label);
-  const msg = !vis.length ? "All measures are hidden. Click a measure on the Values shelf to show it."
+  const msg = !model.measures.length ? ""
+    : !layout.measures.length ? "Drag a measure from the field list onto Values to show numbers."
+    : !vis.length ? "All measures are hidden. Click a measure on the Values shelf to show it."
     : blank.length ? `${blank.join(", ")} can't be added up, so cells that combine several rows of data are blank. Drag fields from the field list onto the grid to fill them.`
     : "";
   setNotice(loadWarning || msg, !!loadWarning);
@@ -544,13 +569,15 @@ function renderShelves() {
     const off = layout.hidden.includes(id);
     return `<span class="pill measure${off ? " off" : ""}" tabindex="0" data-drag="${esc(id)}" data-kind="measure" data-id="${esc(id)}"
       title="Drag to reorder. Click to ${off ? "show" : "hide"}.">${esc(model.measById.get(id).label)}</span>`;
-  }).join("") || `<span class="ph">No measures on Values</span>`;
+  }).join("") || `<span class="ph">Drag measures here</span>`;
 
-  const avail = model ? model.dims.filter(d => !layout.rows.includes(d.id) && !layout.cols.includes(d.id)) : [];
-  $("side").hidden = !model || !model.dims.length;
-  $("pillsAvail").innerHTML = avail.map(d =>
-    `<span class="pill" tabindex="0" data-drag="${esc(d.id)}" data-kind="dim" data-id="${esc(d.id)}" title="${esc(d.label)}: drag onto the grid">${esc(d.label)}</span>`
-  ).join("") || `<span class="ph">Drag a field here to take it off the grid</span>`;
+  const availDims = model ? model.dims.filter(d => !layout.rows.includes(d.id) && !layout.cols.includes(d.id)) : [];
+  const availMeas = model ? model.measures.filter(m => !layout.measures.includes(m.id)) : [];
+  $("side").hidden = !model || !model.dims.length && !model.measures.length;
+  $("pillsAvail").innerHTML = [
+    ...availDims.map(d => `<span class="pill" tabindex="0" data-drag="${esc(d.id)}" data-kind="dim" data-id="${esc(d.id)}" title="${esc(d.label)}: drag onto Rows or Columns">${esc(d.label)}</span>`),
+    ...availMeas.map(m => `<span class="pill measure" tabindex="0" data-drag="${esc(m.id)}" data-kind="measure" data-id="${esc(m.id)}" title="${esc(m.label)}: drag onto Values">${esc(m.label)}</span>`)
+  ].join("") || `<span class="ph">Drag a field here to take it off the grid</span>`;
 }
 
 function showEmpty(title, text) {
@@ -596,8 +623,17 @@ function moveField(id, zone, beforeId) {
 function moveMeasure(id, beforeId) {
   const next = structuredClone(layout);
   next.measures = next.measures.filter(x => x !== id);
+  next.removed = next.removed.filter(x => x !== id);
   const at = beforeId ? next.measures.indexOf(beforeId) : -1;
   next.measures.splice(at < 0 ? next.measures.length : at, 0, id);
+  commit(next, id);
+}
+function removeMeasure(id) {
+  if (!layout.measures.includes(id)) return;
+  const next = structuredClone(layout);
+  next.measures = next.measures.filter(x => x !== id);
+  next.hidden = next.hidden.filter(x => x !== id);
+  next.removed.push(id);
   commit(next, id);
 }
 function toggleMeasure(id) {
@@ -615,6 +651,14 @@ $("btnSwap").onclick  = () => layout && commit({ ...structuredClone(layout), row
 $("btnReset").onclick = () => model && commit(defaultLayout());
 $("btnHide").onclick  = () => { $("app").classList.add("collapsed"); measureSticky(); };
 $("showLayout").onclick = () => { $("app").classList.remove("collapsed"); measureSticky(); };
+
+function foldSide(folded) {
+  $("side").classList.toggle("folded", folded);
+  $("btnSide").setAttribute("aria-expanded", String(!folded));
+  $("btnSide").title = folded ? "Expand the field list" : "Collapse the field list";
+}
+$("btnSide").onclick = e => { e.stopPropagation(); foldSide(!$("side").classList.contains("folded")); };
+$("side").addEventListener("click", () => { if ($("side").classList.contains("folded")) foldSide(false); });
 
 /* ============================================================
    DRAG AND DROP
@@ -649,11 +693,11 @@ document.addEventListener("pointerup", () => {
   const d = drag;
   endDrag();
   if (!d.on) {
-    if (d.kind === "measure") toggleMeasure(d.id);
+    if (d.kind === "measure" && layout.measures.includes(d.id)) toggleMeasure(d.id);
     return;
   }
   if (!d.target) return;
-  if (d.kind === "measure") moveMeasure(d.id, d.target.beforeId);
+  if (d.kind === "measure") d.target.zone === "avail" ? removeMeasure(d.id) : moveMeasure(d.id, d.target.beforeId);
   else moveField(d.id, d.target.zone, d.target.beforeId);
 });
 document.addEventListener("pointercancel", () => drag && endDrag());
@@ -690,12 +734,17 @@ function zones(kind) {
       pillsRect: el.querySelector(".pills").getBoundingClientRect(),
       items: [...el.querySelectorAll(".pill")].map(p => ({ id: p.dataset.id, rect: p.getBoundingClientRect() })) };
   };
-  if (kind === "measure") return [shelf("values")].filter(Boolean);
-  out.push(shelf("cols"), shelf("rows"));
-  const side = $("side");
-  if (kind === "dim" && !side.hidden && !$("app").classList.contains("collapsed")) {
-    out.push({ zone: "avail", dir: "none", rect: side.getBoundingClientRect(), hl: [side], items: [] });
+  const side = $("side"), collapsed = $("app").classList.contains("collapsed");
+  const sideZone = kind !== "meas" && !side.hidden && !collapsed
+    ? { zone: "avail", dir: "none", rect: side.getBoundingClientRect(), hl: [side], items: [] } : null;
+  if (kind === "measure") {
+    // A measure from the field list can also be dropped anywhere on the grid.
+    const wrap = $("gridWrap");
+    const gridZone = !layout.measures.includes(drag.id) && !$("app").classList.contains("is-empty")
+      ? { zone: "values", dir: "none", rect: wrap.getBoundingClientRect(), hl: [], items: [] } : null;
+    return [shelf("values"), sideZone, gridZone].filter(Boolean);
   }
+  out.push(shelf("cols"), shelf("rows"), sideZone);
 
   // In the grid: the header area above the row-label row takes columns;
   // the row-header area on the left takes rows.
@@ -768,7 +817,11 @@ document.addEventListener("keydown", e => {
   });
   if (kind === "measure") {
     const list = layout.measures, i = list.indexOf(id);
-    if (e.key === " " || e.key === "Enter") { e.preventDefault(); toggleMeasure(id); refocus(); }
+    if (i < 0) {
+      if (e.key === "Enter" || e.key === " " || e.key === "ArrowUp") { e.preventDefault(); moveMeasure(id, null); refocus(); }
+    }
+    else if (e.key === "Delete" || e.key === "Backspace") { e.preventDefault(); removeMeasure(id); refocus(); }
+    else if (e.key === " " || e.key === "Enter") { e.preventDefault(); toggleMeasure(id); refocus(); }
     else if (e.key === "ArrowLeft" && i > 0) { e.preventDefault(); moveMeasure(id, list[i - 1]); refocus(); }
     else if (e.key === "ArrowRight" && i < list.length - 1) { e.preventDefault(); moveMeasure(id, list[i + 2] || null); refocus(); }
     return;
@@ -828,18 +881,29 @@ async function loadFromTableau() {
   };
   enc.rows.forEach(n => { const c = claim(n); if (c) dims.push({ id: n, label: prettyDim(n), col: c.index, axis: "rows" }); });
   enc.cols.forEach(n => { const c = claim(n); if (c) dims.push({ id: n, label: prettyDim(n), col: c.index, axis: "cols" }); });
-  enc.fields.forEach(n => { const c = claim(n); if (c) dims.push({ id: n, label: prettyDim(n), col: c.index, axis: "fields" }); });
-  enc.values.forEach(n => { const c = claim(n); if (c) measures.push({ id: n, label: stripAgg(n), col: c.index }); });
+  // The Fields tile takes both: aggregated names like SUM(x) are measures.
+  enc.fields.forEach(n => {
+    const c = claim(n);
+    if (!c) return;
+    if (AGG_RE.test(n.trim())) measures.push({ id: n, label: stripAgg(n), col: c.index, axis: "fields" });
+    else dims.push({ id: n, label: prettyDim(n), col: c.index, axis: "fields" });
+  });
+  enc.values.forEach(n => { const c = claim(n); if (c) measures.push({ id: n, label: stripAgg(n), col: c.index, axis: "values" }); });
 
-  const data = table.data.map(row => row.map(cellOf));
+  // getAllPagesAsync stops at 400 pages and pads the rest with empty slots.
+  const data = table.data.filter(Boolean).map(row => row.map(cellOf));
   diagLines = [
     "WORKSHEET\n  " + worksheet.name,
+    "ENCODINGS (raw)\n" + ((marks && marks.encodings) || []).map(e => "  " + e.id + ": " + JSON.stringify(e.field)).join("\n"),
     "ENCODINGS\n  Rows:    " + (enc.rows.join(", ") || "–") + "\n  Columns: " + (enc.cols.join(", ") || "–") +
       "\n  Fields:  " + (enc.fields.join(", ") || "–") + "\n  Values:  " + (enc.values.join(", ") || "–"),
     "SUMMARY DATA COLUMNS (" + data.length + " rows)\n" + cols.map(c => "  [" + c.index + "] " + c.fieldName + "  " + c.dataType).join("\n"),
     missing.length ? "NOT FOUND IN DATA\n  " + missing.join("\n  ") : ""
   ];
-  loadWarning = missing.length ? "Some fields could not be read from the sheet: " + missing.join(", ") + ". Open with ?debug=1 for details." : "";
+  loadWarning = [
+    missing.length ? "Some fields could not be read from the sheet: " + missing.join(", ") + ". Open with ?debug=1 for details." : "",
+    table.isTotalRowCountLimited ? `Only the first ${data.length.toLocaleString()} rows were loaded. Add filters to the sheet to see everything.` : ""
+  ].filter(Boolean).join(" ");
   setModel(buildModel({ dims, measures, data }));
 }
 
@@ -887,10 +951,10 @@ function demoData() {
       { id: "YEAR(Calendar Date)", label: "Year of Calendar Date", col: 2, axis: "cols" }
     ],
     measures: [
-      { id: "SUM(Bet Eur)", label: "Bet Eur", col: 3 },
-      { id: "SUM(Bet Qty)", label: "Bet Qty", col: 4 },
-      { id: "SUM(Bonus Bet Eur)", label: "Bonus Bet Eur", col: 5 },
-      { id: "SUM(Bonus Win Eur)", label: "Bonus Win Eur", col: 6 }
+      { id: "SUM(Bet Eur)", label: "Bet Eur", col: 3, axis: "values" },
+      { id: "SUM(Bet Qty)", label: "Bet Qty", col: 4, axis: "values" },
+      { id: "SUM(Bonus Bet Eur)", label: "Bonus Bet Eur", col: 5, axis: "values" },
+      { id: "SUM(Bonus Win Eur)", label: "Bonus Win Eur", col: 6, axis: "fields" }
     ],
     data
   };
@@ -907,7 +971,7 @@ function diag() {
   const extra = model ? [
     "MODEL\n  " + model.records.length + " records" + (model.dupes ? ", " + model.dupes + " share a key with another row (combined)" : "") +
       "\n" + model.dims.map(d => "  " + d.id + " [" + d.axis + "]: " + d.members.length + " members").join("\n") +
-      "\n" + model.measures.map(m => "  " + m.id + ": combine " + m.rule).join("\n"),
+      "\n" + model.measures.map(m => "  " + m.id + " [" + m.axis + "]: combine " + m.rule).join("\n"),
     "LAYOUT\n  " + JSON.stringify(layout)
   ] : [];
   $("diagText").textContent = [...diagLines, ...extra].filter(Boolean).join("\n\n");
@@ -916,18 +980,28 @@ function diag() {
 /* ============================================================
    INIT
    ============================================================ */
+// Demo data only ever appears in a local preview (file:// or localhost), never in Tableau.
 (async function init() {
-  if (qs.get("demo") === "1") return startDemo("Demo data.");
-  if (typeof tableau === "undefined" || !tableau.extensions) {
-    return startDemo("Couldn't load tableau.extensions.1.latest.min.js, so this is demo data. Deploy that file next to index.html.", true);
+  const hasLib = typeof tableau !== "undefined" && tableau.extensions;
+  if (LOCAL && (qs.get("demo") === "1" || !hasLib)) return startDemo("Local preview with demo data.");
+  if (!hasLib) {
+    return showEmpty("Couldn't load the Tableau library",
+      "tableau.extensions.1.latest.min.js is missing next to index.html. Redeploy the extension with that file.");
   }
-  try {
-    await Promise.race([
-      tableau.extensions.initializeAsync(),
-      new Promise((_, rej) => setTimeout(() => rej(new Error("timeout")), INIT_TIMEOUT_S * 1000))
-    ]);
-  } catch (e) {
-    return startDemo("Not running inside Tableau, so this is demo data.");
+  const ready = tableau.extensions.initializeAsync();
+  if (LOCAL) {
+    try {
+      await Promise.race([ready, new Promise((_, rej) => setTimeout(() => rej(new Error("timeout")), INIT_TIMEOUT_S * 1000))]);
+    } catch (e) {
+      return startDemo("Local preview with demo data: not running inside Tableau.");
+    }
+  } else {
+    const slow = setTimeout(() => showEmpty("Still connecting to Tableau…",
+      "If you opened this page directly, add it to a worksheet instead: Marks card › mark type › Add Extension."), INIT_TIMEOUT_S * 1000);
+    try { await ready; }
+    catch (e) { return showEmpty("Couldn't connect to Tableau", (e && e.message) || String(e)); }
+    finally { clearTimeout(slow); }
+    showEmpty("Loading data…", "");
   }
   worksheet = tableau.extensions.worksheetContent && tableau.extensions.worksheetContent.worksheet;
   if (!worksheet) {
