@@ -4,14 +4,12 @@
     <default-locale>en_US</default-locale>
     <name resource-id="name"/>
     <description>A text table that viewers can rearrange: drag fields between rows and columns, reorder and hide measures.</description>
-    <author name="Reporting Team"
-            email="reporting@yourcompany.com"
-            organization="Your Company"
-            website="https://yourcompany.com"/>
+    <author name="BI Team"
+            organization="Hub88">
     <min-api-version>1.11</min-api-version>
 
     <source-location>
-      <url>https://guido-riebeek-yolo2.github.io/tableau_export/pivot-grid/index.html</url>
+      <url>https://guido-riebeek-yolo2.github.io/tableau_table_visual/index.html</url>
     </source-location>
 
     <icon>iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAAW0lEQVR42mPwq1xOU8QwasGoBUjoPxIYtWDUglELhowF/4kG5PuAQtOJCiJKTCc2Dsg2nYRIJs90fBZgGoTVdIL2kWABXJCgMvItIEMZA+WZYMRaMNouGj4WAAB3K7TZiLSwFgAAAABJRU5ErkJggg==</icon>
