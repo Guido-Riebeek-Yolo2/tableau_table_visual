@@ -1130,8 +1130,10 @@ function viewerSaved() {
   return l ? { layout: l, ui: d.ui || {}, basedOn: Number(d.basedOn) || 0 } : null;
 }
 const currentUi = () => ({ shelvesCollapsed: $("app").classList.contains("collapsed"), sideFolded: $("side").classList.contains("folded") });
+// Measures struck through by a click are for the current session only, never saved.
+const persistable = l => ({ ...l, hidden: [] });
 function applyUi(ui) { setShelves(!!ui.shelvesCollapsed); foldSide(!!ui.sideFolded); }
-function baseLayout() { const d = authorDefault(); return d ? reconcile(d.layout, null) : defaultLayout(); }
+function baseLayout() { const d = authorDefault(); return d ? persistable(reconcile(d.layout, null)) : defaultLayout(); }
 // First load: the viewer's own layout if it's newer than the author's default, else the default.
 // Authors always start from the default, since their changes are the default.
 function startLayout() {
@@ -1139,7 +1141,7 @@ function startLayout() {
   const use = mine && mine.basedOn === (def ? def.savedAt : 0) ? mine : def;
   if (!use) return null;
   applyUi(use.ui);
-  return reconcile(use.layout, null);
+  return persistable(reconcile(use.layout, null));
 }
 const isAuthor = () => tableauReady && tableau.extensions.environment.mode === "authoring" || qs.get("author") === "1";
 let authorSaveTimer = null;
@@ -1153,14 +1155,14 @@ function rememberLayout() {
     return;
   }
   const def = authorDefault();
-  try { localStorage.setItem(viewerKey(), JSON.stringify({ layout, ui: currentUi(), basedOn: def ? def.savedAt : 0 })); } catch (e) { /* storage blocked */ }
+  try { localStorage.setItem(viewerKey(), JSON.stringify({ layout: persistable(layout), ui: currentUi(), basedOn: def ? def.savedAt : 0 })); } catch (e) { /* storage blocked */ }
   updateResetButton();
 }
 function updateResetButton() {
   if (!layout || !model) return;
   if (isAuthor()) { $("btnResetLayout").hidden = true; return; }
   const def = authorDefault();
-  const changed = JSON.stringify(layout) !== JSON.stringify(baseLayout()) ||
+  const changed = JSON.stringify(persistable(layout)) !== JSON.stringify(baseLayout()) ||
     JSON.stringify(currentUi()) !== JSON.stringify({ shelvesCollapsed: !!(def && def.ui.shelvesCollapsed), sideFolded: !!(def && def.ui.sideFolded) });
   $("btnResetLayout").hidden = !changed;
 }
@@ -1465,7 +1467,7 @@ async function saveDefaultLayout(clear, quiet) {
   try {
     ensureInstanceId();
     if (clear) store.erase("layout");
-    else store.set("layout", JSON.stringify({ layout, ui: currentUi(), savedAt: Date.now() }));
+    else store.set("layout", JSON.stringify({ layout: persistable(layout), ui: currentUi(), savedAt: Date.now() }));
     await store.save();
     show(clear ? "Cleared." : quiet ? "" : "Saved. Save the workbook to keep it.");
   } catch (err) {

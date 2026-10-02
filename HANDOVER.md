@@ -234,6 +234,7 @@ Status: `[ ]` open, `[x]` done. Answers to clarification questions are recorded 
    - **Viewer's own layout**: every layout change, shelf collapse or field-list fold is written to `localStorage` key `pivotgrid:view:<instanceId>` with `basedOn` = the default's `savedAt`. On load it's used only if `basedOn` matches the current default, so a newer author default replaces older personal layouts. A **Reset layout** toolbar button appears only when the viewer's layout differs from the default.
    - `instanceId` (settings) is created on the first author save so browser keys don't collide across workbooks; before that the key is sheet name + a hash of the field ids. All stored layouts pass through `cleanLayout` and then `reconcile`, so missing or new fields are handled.
    - `store` wraps settings: workbook settings once Tableau is connected (`tableauReady`), localStorage in the local preview so reload behaviour can be tested.
+   - Measures struck through by a click (`layout.hidden`) are session-only: `persistable()` drops them from every saved layout (author and viewer) and from the Reset layout comparison.
    - Settings reset only when the extension is removed and re-added (a new instance); export/import formatting first. Option 3 (Custom Views via a hidden parameter) is still open in 8.4.
 
 ### 8.0.1 To explore later: on-demand fields (no query until used)
