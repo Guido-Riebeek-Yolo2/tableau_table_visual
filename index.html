@@ -277,6 +277,12 @@ const COMBINE_RULE = { SUM: "sum", COUNT: "sum", CNT: "sum", MIN: "min", MAX: "m
 const DEFAULT_MEASURES_AXIS = "cols";
 const DEFAULT_MEASURES_AT   = 0;
 
+// Fields driven by a parameter (e.g. "Grid Level 1" <- "Kp.03 Grid Level 1 (P)") show the
+// parameter's current value as their name; a value in PARAM_NONE hides the field entirely.
+// A field's parameter is the one whose name contains the field name as whole words.
+const PARAM_FIELDS = /grid level|metric selector/i;
+const PARAM_NONE   = ["none", "(none)", "- none -", "-", "", "n/a"];
+
 // Seconds before telling the user we're still waiting for Tableau.
 // When opened locally (file:// or localhost) it falls back to demo data instead.
 const INIT_TIMEOUT_S = 8;
@@ -306,6 +312,29 @@ let layout = null;     // { rows, cols, measures, hidden, removed, grouped, tota
 let worksheet = null;
 let diagLines = [];
 let loadWarning = "";
+let params = [];       // the sheet's parameters, from worksheet.getParametersAsync()
+
+function paramFor(fieldName) {
+  const n = norm(stripAgg(fieldName));
+  if (!n || !PARAM_FIELDS.test(n)) return null;
+  const re = new RegExp("(^|[^a-z0-9])" + n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "($|[^a-z0-9])");
+  return params.filter(p => re.test(norm(p.name))).sort((a, b) => a.name.length - b.name.length)[0] || null;
+}
+// Relabels parameter-driven fields and marks those set to "None" as off.
+function applyParams(m) {
+  for (const f of [...m.dims, ...m.measures]) {
+    const p = paramFor(f.id);
+    const v = p && p.currentValue ? String(p.currentValue.formattedValue ?? p.currentValue.value ?? "") : null;
+    f.param = p ? p.name : null;
+    f.off = v != null && PARAM_NONE.includes(norm(v));
+    f.label = v != null && !f.off ? v : f.baseLabel;
+  }
+}
+const isOff = id => {
+  if (id === MEAS) return false;
+  const f = model.dimPos.has(id) ? model.dims[model.dimPos.get(id)] : model.measById.get(id);
+  return !!(f && f.off);
+};
 
 const ruleOf = id => { const m = AGG_RE.exec(String(id).trim()); return (m && COMBINE_RULE[m[1].toUpperCase()]) || "none"; };
 
@@ -367,7 +396,7 @@ function inferFormat(cells) {
    data:     rows of cells { f: formatted text, s: sort key }
    ============================================================ */
 function buildModel({ dims, measures, data }) {
-  const ds = dims.map(d => ({ ...d, members: [], index: new Map() }));
+  const ds = dims.map(d => ({ ...d, baseLabel: d.label, members: [], index: new Map() }));
   ds.forEach(d => {
     const seen = new Map();
     for (const row of data) { const c = row[d.col]; if (!seen.has(c.f)) seen.set(c.f, c.s); }
@@ -381,11 +410,11 @@ function buildModel({ dims, measures, data }) {
     keys.add(k.join(","));
     return { k, m: measures.map(m => row[m.col]) };
   });
-  const ms = measures.map(m => ({ ...m, rule: ruleOf(m.id), fmt: inferFormat(data.map(r => r[m.col])) }));
+  const ms = measures.map(m => ({ ...m, baseLabel: m.label, rule: ruleOf(m.id), fmt: inferFormat(data.map(r => r[m.col])) }));
   return {
     dims: ds, measures: ms, records, dupes: records.length - keys.size,
     dimPos: new Map(ds.map((d, i) => [d.id, i])),
-    measById: new Map(ms.map((m, i) => [m.id, { ...m, index: i }]))
+    measById: new Map(ms.map((m, i) => [m.id, Object.assign(m, { index: i })]))
   };
 }
 
@@ -433,8 +462,8 @@ function reconcile(old, prev) {
   return { rows, cols, measures, hidden, removed, grouped: old.grouped, totals, sort };
 }
 
-const visibleMeasures = () => layout.measures.filter(id => !layout.hidden.includes(id)).map(id => model.measById.get(id));
-const activeLevels = (list, vis) => list.filter(id => id !== MEAS || vis.length > 0);
+const visibleMeasures = () => layout.measures.filter(id => !layout.hidden.includes(id) && !isOff(id)).map(id => model.measById.get(id));
+const activeLevels = (list, vis) => list.filter(id => id === MEAS ? vis.length > 0 : !isOff(id));
 const levelName = id => id === MEAS ? "Measure Names" : model.dims[model.dimPos.get(id)].label;
 
 /* ============================================================
@@ -763,16 +792,16 @@ function renderShelves() {
     ? `<span class="pill meas-names${vis.length ? "" : " empty"}" tabindex="0" data-drag="${MEAS}" data-kind="meas" data-id="${MEAS}" title="Drag to move all measures">Measure Names</span>`
     : `<span class="pill" tabindex="0" data-drag="${esc(id)}" data-kind="dim" data-id="${esc(id)}" title="Drag to move">${esc(levelName(id))}</span>`;
   const empty = `<span class="ph">Drag fields here</span>`;
-  $("pillsCols").innerHTML = layout.cols.map(pill).join("") || empty;
-  $("pillsRows").innerHTML = layout.rows.map(pill).join("") || empty;
-  $("pillsValues").innerHTML = layout.measures.map(id => {
+  $("pillsCols").innerHTML = layout.cols.filter(id => !isOff(id)).map(pill).join("") || empty;
+  $("pillsRows").innerHTML = layout.rows.filter(id => !isOff(id)).map(pill).join("") || empty;
+  $("pillsValues").innerHTML = layout.measures.filter(id => !isOff(id)).map(id => {
     const off = layout.hidden.includes(id);
     return `<span class="pill measure${off ? " off" : ""}" tabindex="0" data-drag="${esc(id)}" data-kind="measure" data-id="${esc(id)}"
       title="Drag to reorder. Click to ${off ? "show" : "hide"}.">${esc(model.measById.get(id).label)}</span>`;
   }).join("") || `<span class="ph">Drag measures here</span>`;
 
-  const availDims = model ? model.dims.filter(d => !layout.rows.includes(d.id) && !layout.cols.includes(d.id)) : [];
-  const availMeas = model ? model.measures.filter(m => !layout.measures.includes(m.id)) : [];
+  const availDims = model ? model.dims.filter(d => !d.off && !layout.rows.includes(d.id) && !layout.cols.includes(d.id)) : [];
+  const availMeas = model ? model.measures.filter(m => !m.off && !layout.measures.includes(m.id)) : [];
   $("side").hidden = !model || !model.dims.length && !model.measures.length;
   $("pillsAvail").innerHTML = [
     ...availDims.map(d => `<span class="pill" tabindex="0" data-drag="${esc(d.id)}" data-kind="dim" data-id="${esc(d.id)}" title="${esc(d.label)}: drag onto Rows or Columns">${esc(d.label)}</span>`),
@@ -1219,7 +1248,7 @@ function cellOf(c) {
 }
 
 async function loadFromTableau() {
-  const spec = await worksheet.getVisualSpecificationAsync();
+  const [spec] = await Promise.all([worksheet.getVisualSpecificationAsync(), loadParams()]);
   const marks = spec.marksSpecifications[spec.activeMarksSpecificationIndex] || spec.marksSpecifications[0];
   const enc = { rows: [], cols: [], fields: [], values: [] };
   for (const e of (marks && marks.encodings) || []) {
@@ -1265,7 +1294,26 @@ async function loadFromTableau() {
     missing.length ? "Some fields could not be read from the sheet: " + missing.join(", ") + ". Open with ?debug=1 for details." : "",
     table.isTotalRowCountLimited ? `Only the first ${data.length.toLocaleString()} rows were loaded. Add filters to the sheet to see everything.` : ""
   ].filter(Boolean).join(" ");
-  setModel(buildModel({ dims, measures, data }));
+  const m = buildModel({ dims, measures, data });
+  applyParams(m);
+  diagLines.push("PARAMETER LABELS\n" + ([...m.dims, ...m.measures].filter(f => f.param)
+    .map(f => `  ${f.id} <- ${f.param}: ${f.off ? "hidden (none)" : f.label}`).join("\n") || "  –"));
+  setModel(m);
+}
+
+// Parameters drive field labels; a label-only change shouldn't wait for a data reload.
+const watchedParams = new Set();
+async function loadParams() {
+  try { params = await worksheet.getParametersAsync(); }
+  catch (e) { params = []; console.warn("Parameters unavailable", e); }
+  for (const p of params) {
+    if (watchedParams.has(p.id || p.name)) continue;
+    watchedParams.add(p.id || p.name);
+    p.addEventListener(tableau.TableauEventType.ParameterChanged, async () => {
+      await loadParams();
+      if (model) { applyParams(model); render(); }
+    });
+  }
 }
 
 let loading = null, reloadQueued = false;

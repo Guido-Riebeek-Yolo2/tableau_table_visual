@@ -200,6 +200,26 @@ Status: `[ ]` open, `[x]` done. Answers to clarification questions are recorded 
 - Excel: SheetJS (`xlsx.full.min.js`, 0.20.3, lazily loaded). Numbers are native values with a number format derived from Tableau's formatting (`inferFormat(...).xl`). Title rows hold the sheet name, export time and `worksheet.getParametersAsync()` values. The file is named `<sheet>_<YYYY-MM-DD>.xlsx`.
 - Still to confirm inside Tableau: downloads from a viz extension frame (Desktop and Cloud), and the parameter list.
 
+7. [x] **Parameter values as field names.** A field on the grid driven by a parameter (`Grid Level 1` <- `Kp.03 Grid Level 1 (P)`) shows the parameter's current value ("Operator") in headers, shelves, the field list, the Totals menu and the export.
+   - Matching: only fields whose name matches `PARAM_FIELDS` (`/grid level|metric selector/i`). The parameter is the one whose name contains the field name as whole words, so `Grid Level 1` doesn't match `Grid Level 10`; the shortest match wins. Works for measures too (`SUM(Kp.06 Metric Selector)`).
+   - Labels update on `ParameterChanged` without waiting for the data reload. `?debug=1` lists the field-to-parameter matches under PARAMETER LABELS.
+8. [x] **Hide fields set to None.** When the parameter's value is in `PARAM_NONE` ("None", "(None)", "-", empty...), the field is marked `off` and left out of the grid, shelves, field list, totals and export. It keeps its place in `layout`, so it comes back in the same position when the parameter changes. Values stay exact: a None field holds one member, so leaving it out merges nothing.
+
+### 8.0.1 To explore later: on-demand fields (no query until used)
+
+Goal: the field list shows many attributes without Tableau querying them; a field is only queried once a viewer drags it onto the grid.
+
+- Why the Fields tile can't do this: every pill on any Marks card tile is part of the sheet's level of detail, so Tableau queries at the grain of all of them and sends that summary data to the extension. Long attribute lists multiply the row count toward the raw grain (30–40M rows). Measures only add columns, so they're cheap.
+- List without querying: `worksheet.getDataSourcesAsync()` returns the data source's fields (name, role, type) without a query. The author would pick available fields in a Configure dialog (stored in `tableau.extensions.settings`), not as pills.
+- Query on demand: the 1.17 library has **undocumented** marks-card editing functions on the worksheet:
+  - `addMarksCardFieldsAsync(marksCardIndex, encodingType, fields, startIndex)`
+  - `spliceMarksCardFieldsAsync(marksCardIndex, encodingType, startIndex, deleteCount, fields)`
+  - `moveMarksCardFieldAsync(marksCardIndex, fromIndex, toIndex, fieldCount)`
+  If they work, dragging a field onto the grid adds the pill to the Rows/Columns tile and Tableau queries exactly the displayed grain.
+- Risks: likely authoring-only (may be refused for viewers on Cloud), the `fields` argument format is unknown, and undocumented APIs may change.
+- First step: a probe panel under `?debug=1` that lists data source fields and tries those calls with each likely argument format, run once in Desktop/web edit and once as a Cloud viewer.
+- Fallbacks: parameter-driven slots (current Grid Level approach), or accept the Fields tile cost for low-cardinality attributes.
+
 ### 8.1 Next: sorting
 
 - Sort on every value column header and on every measure.
