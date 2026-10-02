@@ -233,6 +233,12 @@
   }
   .fp-sec-body { padding: 4px 0 10px; }
   .fp-sub { margin: 8px 12px 2px; font-size: 11px; font-weight: 600; color: var(--ink-2); }
+  .fp-lod { margin-top: 4px; padding-top: 4px; border-top: 1px dashed var(--line); }
+  .fp-lod-m { display: flex; gap: 4px; align-items: center; min-width: 0; }
+  .fp-lod-m select { flex: 1; }
+  .fp-ex { display: flex; flex-direction: column; gap: 3px; }
+  .fp-ex label { display: flex; align-items: center; gap: 5px; cursor: pointer; }
+  .fp-hint code { font-size: 10.5px; background: var(--band); padding: 0 2px; border-radius: 2px; }
   .fp-field { display: grid; grid-template-columns: 110px 1fr; gap: 8px; align-items: center; padding: 3px 12px; }
   .fp-field input[type=color] { width: 44px; height: 23px; padding: 1px; border: 1px solid var(--line-strong); border-radius: 3px; background: var(--bg); cursor: pointer; }
   .fp-field input[type=checkbox] { justify-self: start; }
@@ -422,7 +428,8 @@ const DEFAULT_FORMAT = {
   lineColor: "#e4e7ea", dividerColor: "#c4cad0",
   paramMap: {},  // field id -> parameter name that names it; NO_PARAM = don't rename
   measureFormats: {},  // measure id -> { type, decimals, units, prefix, suffix, thousands, negative }; absent = Tableau's format
-  dateFormats: {}      // date dimension id -> DATE_FORMATS key; absent = Tableau's format
+  dateFormats: {},     // date dimension id -> DATE_FORMATS key; absent = Tableau's format
+  totalRules: {}       // measure id -> { rule, num, den, lods: [{ m, ex: [dim ids] }] }; absent = from the aggregation
 };
 const NO_PARAM = "__none__";
 const DATE_FORMATS = {
@@ -574,7 +581,7 @@ function buildModel({ dims, measures, data }) {
     return { k, m: measures.map(m => row[m.col]) };
   });
   const ms = measures.map(m => ({
-    ...m, baseLabel: m.label, rule: ruleOf(m.id), fmt: inferFormat(data.map(r => r[m.col])),
+    ...m, baseLabel: m.label, rule: ruleOf(m.id), autoRule: ruleOf(m.id), fmt: inferFormat(data.map(r => r[m.col])),
     sample: (data.find(r => typeof r[m.col].s === "number" && r[m.col].s) || [])[m.col]?.s
   }));
   return {
@@ -680,16 +687,32 @@ function cellAt(fixed, mIdx) {
   }
   const e = v.get(fixed.map(f => f[1]).join(","));
   if (!e) return EMPTY;
-  if (e.recs && !e.cells[mIdx]) e.cells[mIdx] = combine(e.recs, mIdx);
+  if (e.recs && !e.cells[mIdx]) e.cells[mIdx] = combine(e.recs, mIdx, fixed);
   return e.cells[mIdx];
 }
-function combine(g, i) {
+const nums = (g, i) => g.map(r => r.m[i].s).filter(v => typeof v === "number" && isFinite(v));
+// Combines several rows of one measure using its total rule (Format › Total calculations).
+function combine(g, i, fixed) {
   const m = model.measures[i];
+  const out = v => v == null || !isFinite(v) ? EMPTY : { f: m.fmt(v), s: v };
+  if (m.rule === "ratio") {
+    const den = nums(g, m.ratio[1]).reduce((a, b) => a + b, 0);
+    return den ? out(nums(g, m.ratio[0]).reduce((a, b) => a + b, 0) / den) : EMPTY;
+  }
+  if (m.rule === "lod") {
+    // Use the LOD measure that excludes exactly the dims being totalled here; its value must be
+    // the same on every row of the group, otherwise it isn't this total and the cell stays blank.
+    const fixedPos = new Set(fixed.map(f => f[0]));
+    const wild = model.dims.map((d, p) => p).filter(p => !fixedPos.has(p) && model.dims[p].members.length > 1);
+    const lod = m.lods.find(l => l.ex.length === wild.length && wild.every(p => l.ex.includes(p)));
+    const vals = lod ? nums(g, lod.idx) : [];
+    if (!vals.length || vals.some(v => Math.abs(v - vals[0]) > 1e-9 * Math.max(1, Math.abs(v)))) { blanked.add(m.id); return EMPTY; }
+    return out(vals[0]);
+  }
   if (m.rule === "none") { blanked.add(m.id); return EMPTY; }
-  const vals = g.map(r => r.m[i].s).filter(v => typeof v === "number" && isFinite(v));
+  const vals = nums(g, i);
   if (!vals.length) return EMPTY;
-  const v = vals.reduce(m.rule === "sum" ? (a, b) => a + b : m.rule === "min" ? (a, b) => Math.min(a, b) : (a, b) => Math.max(a, b));
-  return { f: m.fmt(v), s: v };
+  return out(vals.reduce(m.rule === "sum" ? (a, b) => a + b : m.rule === "min" ? (a, b) => Math.min(a, b) : (a, b) => Math.max(a, b)));
 }
 
 const nullsLast = (a, b, dir) => a == null ? (b == null ? 0 : 1) : b == null ? -1 : dir === "asc" ? cmpKey(a, b) : cmpKey(b, a);
@@ -783,7 +806,7 @@ function buildGrid() {
       const meas = vis[mVis];
       if (!meas) continue;
       // A group of a measure that can't be added up has no subtotal: don't sort the groups by it.
-      if (rowLv.slice(L + 1).some(id => id !== MEAS) && model.measures[meas.index].rule === "none") continue;
+      if (rowLv.slice(L + 1).some(id => id !== MEAS) && ["none", "lod"].includes(model.measures[meas.index].rule)) continue;
       const t = rowLv.map((id, i) => i < L ? prefix[i] : -1);
       const vals = new Map(members.map(m => {
         t[L] = m;
@@ -1006,7 +1029,9 @@ function renderShelves() {
   }).join("") || `<span class="ph">Drag measures here</span>`;
 
   const availDims = model ? model.dims.filter(d => !d.off && !layout.rows.includes(d.id) && !layout.cols.includes(d.id)) : [];
-  const availMeas = model ? model.measures.filter(m => !m.off && !layout.measures.includes(m.id)) : [];
+  // LOD helper measures only feed totals, so they stay out of the field list.
+  const helpers = new Set(model ? model.measures.flatMap(m => m.rule === "lod" ? m.lods.map(l => model.measures[l.idx].id) : []) : []);
+  const availMeas = model ? model.measures.filter(m => !m.off && !helpers.has(m.id) && !layout.measures.includes(m.id)) : [];
   $("side").hidden = !model || !model.dims.length && !model.measures.length;
   $("pillsAvail").innerHTML = [
     ...availDims.map(d => `<span class="pill" tabindex="0" data-drag="${esc(d.id)}" data-kind="dim" data-id="${esc(d.id)}" title="${esc(d.label)}: drag onto Rows or Columns">${esc(d.label)}</span>`),
@@ -1303,6 +1328,8 @@ const FORMAT_SECTIONS = [
     desc: f => { const n = Object.keys(f.measureFormats).length; return n ? `${n} custom` : "Tableau's formats"; } },
   { id: "dates", title: "Date formats", body: () => dateSectionHtml(),
     desc: f => { const n = Object.keys(f.dateFormats).length; return n ? `${n} custom` : "Tableau's formats"; } },
+  { id: "totalsCalc", title: "Total calculations", body: () => `<div id="fpTotals">${totalSectionHtml()}</div>`,
+    desc: f => { const n = Object.keys(f.totalRules).length; return n ? `${n} custom` : "automatic"; } },
   { id: "params", title: "Parameter names", body: () => paramSectionHtml(),
     desc: f => { const n = Object.keys(f.paramMap).length; return n ? `${n} chosen` : "automatic"; } }
 ];
@@ -1353,6 +1380,16 @@ function formatDate(ms, pattern) {
   })[t]);
 }
 function applyFieldFormats(m) {
+  const mIdx = id => m.measures.findIndex(x => x.id === id);
+  for (const meas of m.measures) {
+    const t = format.totalRules[meas.id];
+    meas.ratio = t && t.rule === "ratio" ? [mIdx(t.num), mIdx(t.den)] : null;
+    meas.lods = t && t.rule === "lod" ? t.lods.map(l => ({ idx: mIdx(l.m), ex: l.ex.map(id => m.dimPos.get(id)).filter(p => p != null) }))
+      .filter(l => l.idx >= 0).map(l => ({ ...l, ex: l.ex.filter(p => m.dims[p].members.length > 1) })) : [];
+    meas.rule = !t ? meas.autoRule
+      : t.rule === "ratio" ? (meas.ratio.every(i => i >= 0) ? "ratio" : "none")
+      : t.rule;
+  }
   for (const meas of m.measures) {
     const c = format.measureFormats[meas.id];
     meas.custom = c ? makeNumberFormat(c) : null;
@@ -1383,6 +1420,16 @@ function cleanFormat(f) {
       out.dateFormats = {};
       if (v && typeof v === "object") for (const [id, p] of Object.entries(v)) {
         if (Object.hasOwn(DATE_FORMATS, p) && id.length <= 300) out.dateFormats[id] = p;
+      }
+    }
+    else if (key === "totalRules") {
+      out.totalRules = {};
+      const s = x => typeof x === "string" ? x.slice(0, 300) : "";
+      if (v && typeof v === "object") for (const [id, t] of Object.entries(v)) {
+        if (!t || typeof t !== "object" || id.length > 300 || !TOTAL_RULES.some(r => r[0] === t.rule)) continue;
+        out.totalRules[id] = { rule: t.rule, num: s(t.num), den: s(t.den),
+          lods: (Array.isArray(t.lods) ? t.lods : []).slice(0, 12).filter(l => l && typeof l === "object")
+            .map(l => ({ m: s(l.m), ex: (Array.isArray(l.ex) ? l.ex : []).filter(x => typeof x === "string").slice(0, 30).map(s) })) };
       }
     }
     else if (typeof def === "boolean") { if (typeof v === "boolean") out[key] = v; }
@@ -1423,7 +1470,7 @@ function applyFormat(f) {
 }
 function setFormat(f) {
   const changed = k => JSON.stringify(f[k]) !== JSON.stringify(format[k]);
-  const mapChanged = changed("paramMap"), fieldsChanged = changed("measureFormats") || changed("dateFormats");
+  const mapChanged = changed("paramMap"), fieldsChanged = changed("measureFormats") || changed("dateFormats") || changed("totalRules");
   format = f;
   applyFormat(f);
   updateSummaries();
@@ -1434,6 +1481,41 @@ function setFormat(f) {
 }
 
 let fpMeasure = null;   // measure being edited in the Number formats section
+let fpTotal = null;     // measure being edited in the Total calculations section
+const TOTAL_RULES = [["sum", "Sum"], ["min", "Minimum"], ["max", "Maximum"], ["ratio", "Ratio of two measures"],
+  ["lod", "From LOD measures (distinct counts)"], ["none", "Leave blank"]];
+const AUTO_RULE_TEXT = { sum: "Sum", min: "Minimum", max: "Maximum", none: "blank" };
+function totalSectionHtml() {
+  if (!model || !model.measures.length) return `<div class="fp-hint">No measures on this sheet.</div>`;
+  if (!model.measById.has(fpTotal)) fpTotal = (model.measures.find(m => m.autoRule === "none") || model.measures[0]).id;
+  const m = model.measById.get(fpTotal), t = format.totalRules[fpTotal];
+  const opt = (v, txt, cur) => `<option value="${esc(v)}"${v === cur ? " selected" : ""}>${esc(txt)}</option>`;
+  const row = (label, input) => `<label class="fp-field"><span>${label}</span>${input}</label>`;
+  const hint = txt => `<div class="fp-hint">${txt}</div>`;
+  const measures = cur => opt("", "Choose…", cur) + model.measures.filter(x => x.id !== fpTotal).map(x => opt(x.id, x.label, cur)).join("");
+  let html = row("Measure", `<select data-tr-pick>${model.measures.map(x => opt(x.id, x.label +
+      (format.totalRules[x.id] ? "  \u2022 custom" : x.autoRule === "none" ? "  \u2022 no total" : ""), fpTotal)).join("")}</select>`) +
+    row("Totals use", `<select data-tr="rule">${opt("", `Automatic (${AUTO_RULE_TEXT[m.autoRule]})`, t ? t.rule : "")}` +
+      TOTAL_RULES.map(([v, txt]) => opt(v, txt, t ? t.rule : "")).join("") + `</select>`);
+  if (t && t.rule === "ratio") {
+    html += row("Numerator", `<select data-tr="num">${measures(t.num)}</select>`) +
+      row("Denominator", `<select data-tr="den">${measures(t.den)}</select>`) +
+      hint("Every total is the sum of the numerator divided by the sum of the denominator, e.g. Margin = GGR Eur ÷ Bet Eur, Avg Bet = Bet Eur ÷ Bet Qty. Both must be summable measures on the sheet (Values or Fields tile).");
+  }
+  if (t && t.rule === "lod") {
+    const dimName = d => d.baseLabel === d.label ? d.label : `${d.baseLabel} (${d.label})`;
+    html += t.lods.map((l, i) => `<div class="fp-lod">` +
+      `<div class="fp-field"><span>LOD measure ${i + 1}</span><span class="fp-lod-m"><select data-tl-m="${i}" aria-label="LOD measure ${i + 1}">${measures(l.m)}</select>` +
+      `<button class="ib" data-tl-del="${i}" title="Remove" aria-label="Remove LOD measure ${i + 1}">${ICON.del}</button></span></div>` +
+      `<div class="fp-field"><span>Excludes</span><span class="fp-ex">${model.dims.map(d =>
+        `<label><input type="checkbox" data-tl-ex="${i}" value="${esc(d.id)}"${l.ex.includes(d.id) ? " checked" : ""}> ${esc(dimName(d))}</label>`).join("")}</span></div></div>`
+    ).join("") + `<div class="menu-foot"><button class="tool" data-tl-add>Add LOD measure</button></div>` +
+      hint("Distinct counts can't be added up, so Tableau has to calculate each total. For each total level, add a measure like " +
+        "<code>MIN({EXCLUDE [Grid Level 1] : COUNTD([Operator])})</code> to the Fields tile and tick the fields it excludes. " +
+        "For the grand total, exclude every grid field. Totals with no matching LOD measure stay blank.");
+  }
+  return html;
+}
 function previewText(m) {
   const f = m.custom || m.fmt, v = m.sample ?? 1234567.891;
   return `Example: ${f(Math.abs(v))}  /  ${f(-Math.abs(v))}` + (m.custom ? "" : "  (Tableau's format)");
@@ -1565,6 +1647,23 @@ $("fpBody").addEventListener("input", e => {
     setFormat(cleanFormat({ ...format, dateFormats: df }));
     return;
   }
+  if (el.matches("[data-tr-pick]")) { fpTotal = el.value; $("fpTotals").innerHTML = totalSectionHtml(); return; }
+  if (el.dataset.tr || el.dataset.tlM != null || el.dataset.tlEx != null) {
+    const tr = structuredClone(format.totalRules), cur = tr[fpTotal] || { rule: "", num: "", den: "", lods: [] };
+    if (el.dataset.tr === "rule") {
+      if (!el.value) delete tr[fpTotal];
+      else tr[fpTotal] = { ...cur, rule: el.value, lods: el.value === "lod" && !cur.lods.length ? [{ m: "", ex: [] }] : cur.lods };
+    }
+    else if (el.dataset.tr) tr[fpTotal] = { ...cur, [el.dataset.tr]: el.value };
+    else if (el.dataset.tlM != null) cur.lods[+el.dataset.tlM].m = el.value;
+    else {
+      const l = cur.lods[+el.dataset.tlEx];
+      l.ex = el.checked ? [...l.ex, el.value] : l.ex.filter(x => x !== el.value);
+    }
+    setFormat(cleanFormat({ ...format, totalRules: tr }));
+    if (el.dataset.tr === "rule") $("fpTotals").innerHTML = totalSectionHtml();
+    return;
+  }
   if (el.dataset.pm != null) {
     const map = { ...format.paramMap };
     if (el.value) map[el.dataset.pm] = el.value; else delete map[el.dataset.pm];
@@ -1575,6 +1674,14 @@ $("fpBody").addEventListener("input", e => {
   setFormat(cleanFormat({ ...format, [key]: el.type === "checkbox" ? el.checked : el.value }));
 });
 $("formatPanel").addEventListener("click", e => {
+  const lod = e.target.closest("[data-tl-add], [data-tl-del]");
+  if (lod) {
+    const tr = structuredClone(format.totalRules), t = tr[fpTotal];
+    if (lod.dataset.tlDel != null) t.lods.splice(+lod.dataset.tlDel, 1); else t.lods.push({ m: "", ex: [] });
+    setFormat(cleanFormat({ ...format, totalRules: tr }));
+    $("fpTotals").innerHTML = totalSectionHtml();
+    return;
+  }
   const b = e.target.closest("[data-fp]");
   if (!b) return;
   if (b.dataset.fp === "save") closeFormat(true);
