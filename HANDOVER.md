@@ -24,12 +24,13 @@ Decisions already made with the user:
 ## 2. Files
 
 ```
-pivot-grid/
-  index.html                          The whole extension: HTML, CSS and JS in one file
-  pivot-grid.trex                     Viz extension manifest
-  tableau.extensions.1.latest.min.js  NOT in this folder yet: copy it in (version 1.17)
-  HANDOVER.md                         This file
+index.html                          The whole extension: HTML, CSS and JS in one file
+pivot-grid.trex                     Viz extension manifest
+tableau.extensions.1.latest.min.js  Extensions API library, version 1.17 (from tableau/extensions-api)
+HANDOVER.md                         This file
 ```
+
+Repo: `https://github.com/Guido-Riebeek-Yolo2/tableau_table_visual`, served by GitHub Pages from `main` / root. If the library is missing, the page falls back to demo data and shows a red notice.
 
 Reference files from the original export module, which live in the project root and not in `pivot-grid/`:
 
@@ -38,7 +39,7 @@ Reference files from the original export module, which live in the project root 
 - `tableau_extensions_1_latest_min.js` is the Extensions API library, version 1.17. It contains `getVisualSpecificationAsync`, `worksheetContent`, `getSummaryDataReaderAsync` and `SummaryDataChanged`. The page loads it as `./tableau.extensions.1.latest.min.js`, so rename the file when you copy it in.
 - `xlsx_full_min.js` is SheetJS, for the export iteration. The old module loads it as `./xlsx.full.min.js`.
 
-Hosting URL in the manifest: `https://guido-riebeek-yolo2.github.io/tableau_export/pivot-grid/index.html`
+Hosting URL in the manifest: `https://guido-riebeek-yolo2.github.io/tableau_table_visual/index.html`
 
 ## 3. Conventions to keep
 
@@ -57,15 +58,17 @@ The model is built from the summary data, independently of any layout:
 
 ```
 model = {
-  dims:     [{ id, label, col, axis, members: [labels in sort order], index: Map(label -> memberIdx) }],
-  measures: [{ id, label, col }],
-  records:  [{ k: [memberIdx per dim, in model.dims order], m: [cell per measure] }],
-  lookup:   Map("i,j,k" -> record),        // key = member indices joined in model.dims order
+  dims:     [{ id, label, col, axis: "rows"|"cols"|"fields", members: [labels in sort order], index: Map(label -> memberIdx) }],
+  measures: [{ id, label, col, rule: "sum"|"min"|"max"|"none", fmt: number -> string }],
+  records:  [{ k: [memberIdx per dim, in model.dims order], m: [cell per measure] }],   // every summary row
   dimPos:   Map(dimId -> position in model.dims),
   measById: Map(measId -> { ...measure, index }),
-  dupes:    count of rows whose dim key repeated (first row kept)
+  dupes:    count of rows whose full dim key repeats (e.g. fields on the Detail tile)
 }
 ```
+
+- `rule` comes from the aggregation in the field name through `COMBINE_RULE` (SUM/COUNT sum, MIN, MAX). Anything else is `none`.
+- `fmt` is learned from Tableau's own formatted cells by `inferFormat`: prefix/suffix, separators, decimals, %, K/M/B units and negative style. Only used for combined cells.
 
 - A cell is `{ f: formatted text, s: sort key }`. The sort key is `nativeValue` when it's a number, `getTime()` for a Date, and the formatted text otherwise.
 - Members are sorted by sort key. Numbers sort numerically. Text uses `Intl.Collator` with `numeric: true`, which matches Tableau's natural sort ("1x2Network, 3Oaks, 7rings, 100HP Gaming").
@@ -74,12 +77,15 @@ model = {
 ### 4.2 Layout
 
 ```
-layout = { rows: [ids], cols: [ids], measures: [measure ids, display order], hidden: [measure ids] }
+layout = { rows: [ids], cols: [ids], measures: [measure ids, display order], hidden: [measure ids], removed: [dim ids] }
 ```
+
+- Dims not on `rows` or `cols` show in the field list on the left. `removed` remembers dims the viewer took off the grid, so a refresh doesn't put them back.
+- Dims on the author's **Fields** tile start in the field list.
 
 - `MEAS = "__measures__"` is the Measure Names pseudo-field. It can sit at any position on either axis.
 - `defaultLayout()` builds the author's layout from the encodings. It places `MEAS` according to `DEFAULT_MEASURES_AXIS` and `DEFAULT_MEASURES_AT`.
-- `reconcile(old)` runs on every data refresh. It keeps the viewer's arrangement, adds new fields to their default axis, and drops fields that no longer exist.
+- `reconcile(old, prev)` runs on every data refresh. It keeps the viewer's arrangement, adds new fields to their default place, drops fields that no longer exist, and re-applies the author's choice for any field the author moved to another tile.
 - Every layout change goes through `commit(next, movedId)`. It skips no-op changes, re-renders, and briefly flashes the moved pill. The callers are `moveField`, `moveMeasure`, `toggleMeasure`, Swap and Reset.
 
 ### 4.3 Pivot (`axisTuples`, `firstDiff`, `runLens`)
@@ -87,7 +93,7 @@ layout = { rows: [ids], cols: [ids], measures: [measure ids, display order], hid
 - `axisTuples(levels, vis)` returns one tuple per header path. Each tuple holds member indices aligned with the levels. At the `MEAS` level it holds an index into `vis`, the visible measures. Only dimension combinations that exist in the data are produced, as in Tableau. Tuples are sorted lexicographically.
 - `firstDiff(T)[i]` is the level at which tuple `i` first differs from tuple `i-1`.
 - `runLens(fd, lvl)` gives the span length at each run start and 0 elsewhere. It drives `colspan` and `rowspan`.
-- To read a cell value, build the lookup key by walking `model.dims` and reading each dimension's index from the row or column tuple using `where`. Then take `rec.m[vis[mi].index].f`.
+- To read a cell value, `gridView(rowLv, colLv)` groups the records by the dims on the grid. A group of one record keeps Tableau's cells as they are. A larger group (a dim is in the field list, or Detail fields split the data) is combined with `combine` using each measure's `rule`; `none` gives a blank cell and a notice naming the measure. The key is built from `view.ids` with `where`.
 
 ### 4.4 Render (`render`)
 
@@ -103,7 +109,7 @@ The table is built as one HTML string:
 ### 4.5 Drag and drop
 
 - The drag engine uses pointer events, not HTML5 drag-and-drop, so it behaves the same in Tableau Desktop's browser, on Server/Cloud and on touch screens.
-- Any element with `data-drag` (the field id) and `data-kind` can be dragged. `dim` and `meas` items go to rows or cols. `measure` items can only be reordered within the Values shelf.
+- Any element with `data-drag` (the field id) and `data-kind` can be dragged. `dim` and `meas` items go to rows or cols; `dim` items can also go to the field list (`avail` zone). `measure` items can only be reordered within the Values shelf.
 - A drag starts after 4px of movement. Without that movement it counts as a click, and clicking a measure pill toggles it hidden.
 - `zones(kind)` is recomputed on every pointer move, so scrolling mid-drag works. The zones are:
   - the shelves, with pills laid out as `dir: "wrap"`;
@@ -111,7 +117,7 @@ The table is built as one HTML string:
   - a grid row zone covering the row-header area, with `dir: "h"`.
 - `updateTarget` finds the insertion point as a `beforeId`, not a numeric index. That keeps it correct even when the grid hides the `MEAS` level. It also positions the orange `#marker`.
 - Escape cancels a drag.
-- Keyboard support on a focused pill: Left and Right reorder it, Up moves a field from Rows to Columns, Down moves it from Columns to Rows, and Space or Enter toggles a measure.
+- Keyboard support on a focused pill: Left and Right reorder it, Up moves a field from Rows to Columns, Down moves it from Columns to Rows, Delete removes it to the field list, and Space or Enter toggles a measure. In the field list, Up adds to Columns and Down or Enter adds to Rows.
 
 ### 4.6 Tableau integration
 
@@ -154,7 +160,7 @@ Cases already covered:
 
 - No virtualization. Every cell is rendered as DOM, which is fine up to tens of thousands of cells. Add row virtualization before large sheets.
 - Outer row headers use rowspan and stick left. Very tall groups keep their label at the top of the group, not sticky vertically.
-- Viewers can't remove a dimension from the grid. That needs re-aggregation (section 8.2).
+- Viewers can remove a dimension from the grid. Measures whose aggregation isn't SUM, COUNT, MIN or MAX show blank in merged cells until the author-configured rules from section 8.2 exist.
 - The layout lives only in memory and is lost on reload (section 8.4).
 - There is no dark-mode styling, which is fine inside Tableau.
 

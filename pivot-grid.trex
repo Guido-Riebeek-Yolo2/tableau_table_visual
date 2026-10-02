@@ -39,6 +39,13 @@
       </role-spec>
       <fields max-count="30"/>
     </encoding>
+    <encoding id="fields">
+      <display-name resource-id="enc_fields">Fields</display-name>
+      <role-spec>
+        <role-type>discrete-dimension</role-type>
+      </role-spec>
+      <fields max-count="30"/>
+    </encoding>
   </worksheet-extension>
 
   <resources>
@@ -53,6 +60,9 @@
     </resource>
     <resource id="enc_values">
       <text locale="en_US">Values</text>
+    </resource>
+    <resource id="enc_fields">
+      <text locale="en_US">Fields</text>
     </resource>
   </resources>
 </manifest>

@@ -69,8 +69,22 @@
   #notice:empty { display: none; }
   #notice.error { background: #fbf0ef; color: #a2403a; }
 
+  /* ---------- field list ---------- */
+  #main { flex: 1; display: flex; min-height: 0; }
+  #side {
+    flex: none; width: 168px; display: flex; flex-direction: column;
+    border-right: 1px solid var(--line-strong); background: var(--head); overflow: auto;
+  }
+  #side[hidden] { display: none; }
+  #side.over { background: #fdf6f0; }
+  .side-head { padding: 8px 10px 2px; color: var(--ink-2); }
+  #pillsAvail { flex-direction: column; flex-wrap: nowrap; align-items: stretch; padding: 5px 8px 10px; }
+  #pillsAvail .pill { overflow: hidden; text-overflow: ellipsis; display: block; line-height: 21px; }
+  #pillsAvail .ph { white-space: normal; padding: 2px; }
+  #app.collapsed #side { display: none; }
+
   /* ---------- grid ---------- */
-  #gridWrap { flex: 1; overflow: auto; position: relative; }
+  #gridWrap { flex: 1; min-width: 0; overflow: auto; position: relative; }
   #grid { border-collapse: separate; border-spacing: 0; font-variant-numeric: tabular-nums; }
   #grid th, #grid td {
     padding: 3px 9px; white-space: nowrap; background: var(--bg);
@@ -130,6 +144,7 @@
 
   @media (max-width: 520px) {
     .shelf-label { width: 70px; }
+    #side { width: 120px; }
     .tool span { display: none; }
   }
   @media (prefers-reduced-motion: reduce) {
@@ -172,8 +187,14 @@
   </section>
   <button id="showLayout">Show layout</button>
   <div id="notice"></div>
-  <div id="gridWrap"><table id="grid"></table></div>
-  <div id="empty"><p><strong>Loading data…</strong></p></div>
+  <div id="main">
+    <aside id="side" aria-label="Field list" hidden>
+      <div class="side-head">Fields</div>
+      <div class="pills" id="pillsAvail"></div>
+    </aside>
+    <div id="gridWrap"><table id="grid"></table></div>
+    <div id="empty"><p><strong>Loading data…</strong></p></div>
+  </div>
   <div id="diag"><details open><summary>Diagnostics</summary><pre id="diagText">–</pre></details></div>
 </div>
 <div id="marker"></div>
@@ -184,7 +205,13 @@
    ============================================================ */
 
 // Encoding ids from the .trex manifest -> grid axis.
-const ENC_AXIS = { rows: "rows", columns: "cols", values: "values" };
+// "fields" = the field list: available to the viewer, not on the grid at first.
+const ENC_AXIS = { rows: "rows", columns: "cols", values: "values", fields: "fields" };
+
+// How a measure combines when one grid cell covers several rows of data
+// (a field is in the field list instead of on the grid). Any other
+// aggregation (AVG, COUNTD, MEDIAN, AGG of a calc...) is left blank, never guessed.
+const COMBINE_RULE = { SUM: "sum", COUNT: "sum", MIN: "min", MAX: "max" };
 
 // Where the Measure Names pill starts out when the author hasn't moved it:
 // "cols" or "rows", and its position on that axis (0 = outermost, -1 = innermost).
@@ -215,9 +242,54 @@ const natural = new Intl.Collator(undefined, { numeric: true, sensitivity: "base
 const cmpKey = (a, b) => (typeof a === "number" && typeof b === "number") ? a - b : natural.compare(String(a), String(b));
 
 let model = null;      // the sheet's data, independent of layout
-let layout = null;     // { rows:[ids], cols:[ids], measures:[ids], hidden:[ids] }
+let layout = null;     // { rows:[ids], cols:[ids], measures:[ids], hidden:[ids], removed:[ids] }
 let worksheet = null;
 let diagLines = [];
+let loadWarning = "";
+
+const ruleOf = id => { const m = AGG_RE.exec(String(id).trim()); return (m && COMBINE_RULE[m[1].toUpperCase()]) || "none"; };
+
+// Formats combined values the way Tableau formats this measure, learned from
+// its own formatted cells: prefix/suffix, separators, decimals, %, K/M/B units.
+function inferFormat(cells) {
+  const plain = v => String(Math.round(v * 1e6) / 1e6);
+  const nums = cells.filter(c => c && typeof c.s === "number" && isFinite(c.s) && c.s !== 0 && /\d/.test(c.f));
+  if (!nums.length) return plain;
+  const split = c => /^(.*?)(\d(?:[\d.,'\s\u00a0\u202f]*\d)?)(\D*)$/.exec(c.f);
+  const biggest = list => list.reduce((a, c) => Math.abs(c.s) > Math.abs(a.s) ? c : a);
+  const pos = nums.filter(c => c.s > 0), neg = nums.filter(c => c.s < 0);
+  const ex = biggest(pos.length ? pos : nums);
+  const p = split(ex);
+  if (!p) return plain;
+  const [, pre, num, suf] = p;
+  let posPre = pre, posSuf = suf, negPre, negSuf;
+  if (ex.s < 0) {
+    posPre = pre.replace(/[-\u2212(]/, ""); posSuf = suf.replace(")", "");
+    negPre = pre; negSuf = suf;
+  } else {
+    const q = neg.length && split(biggest(neg));
+    negPre = q ? q[1] : "-" + pre; negSuf = q ? q[3] : suf;
+  }
+  const last = num.replace(/\d/g, "").slice(-1);
+  for (const scale of [1, 100, 1e-3, 1e-6, 1e-9, 1e-12]) {
+    for (const dec of last ? [last, ""] : [""]) {
+      const at = dec ? num.lastIndexOf(dec) : -1;
+      const ip = at < 0 ? num : num.slice(0, at), fp = at < 0 ? "" : num.slice(at + 1);
+      if (/\D/.test(fp)) continue;
+      const val = Number(ip.replace(/\D/g, "") + "." + (fp || "0"));
+      if (Math.abs(val - Math.abs(ex.s) * scale) > 0.5 * 10 ** -fp.length + 1e-9 * val) continue;
+      const d = fp.length, dp = dec || (last === "." ? "," : ".");
+      const group = ip.replace(/\d/g, "")[0] || (val >= 1000 ? "" : dp === "," ? "." : ",");
+      return v => {
+        const r = (Math.abs(v) * scale).toFixed(d);
+        const [i, f] = r.split(".");
+        const n = (group ? i.replace(/\B(?=(\d{3})+(?!\d))/g, group) : i) + (f ? dp + f : "");
+        return v < 0 && /[1-9]/.test(r) ? negPre + n + negSuf : posPre + n + posSuf;
+      };
+    }
+  }
+  return plain;
+}
 
 /* ============================================================
    MODEL
@@ -234,19 +306,17 @@ function buildModel({ dims, measures, data }) {
     d.members = entries.map(e => e[0]);
     d.members.forEach((m, k) => d.index.set(m, k));
   });
-  const records = [], lookup = new Map();
-  let dupes = 0;
-  for (const row of data) {
+  const keys = new Set();
+  const records = data.map(row => {
     const k = ds.map(d => d.index.get(row[d.col].f));
-    const key = k.join(",");
-    if (lookup.has(key)) { dupes++; continue; }
-    const rec = { k, m: measures.map(m => row[m.col]) };
-    records.push(rec); lookup.set(key, rec);
-  }
+    keys.add(k.join(","));
+    return { k, m: measures.map(m => row[m.col]) };
+  });
+  const ms = measures.map(m => ({ ...m, rule: ruleOf(m.id), fmt: inferFormat(data.map(r => r[m.col])) }));
   return {
-    dims: ds, measures, records, lookup, dupes,
+    dims: ds, measures: ms, records, dupes: records.length - keys.size,
     dimPos: new Map(ds.map((d, i) => [d.id, i])),
-    measById: new Map(measures.map((m, i) => [m.id, { ...m, index: i }]))
+    measById: new Map(ms.map((m, i) => [m.id, { ...m, index: i }]))
   };
 }
 
@@ -255,30 +325,32 @@ function buildModel({ dims, measures, data }) {
    ============================================================ */
 function defaultLayout() {
   const rows = model.dims.filter(d => d.axis === "rows").map(d => d.id);
-  const cols = model.dims.filter(d => d.axis !== "rows").map(d => d.id);
+  const cols = model.dims.filter(d => d.axis === "cols").map(d => d.id);
   if (model.measures.length) {
     const list = DEFAULT_MEASURES_AXIS === "rows" ? rows : cols;
     const at = DEFAULT_MEASURES_AT < 0 ? list.length : Math.min(DEFAULT_MEASURES_AT, list.length);
     list.splice(at, 0, MEAS);
   }
-  return { rows, cols, measures: model.measures.map(m => m.id), hidden: [] };
+  return { rows, cols, measures: model.measures.map(m => m.id), hidden: [], removed: [] };
 }
 
 // Keeps the user's arrangement when the data refreshes; fields the author
-// added since go to their starting axis, removed fields drop out.
-function reconcile(old) {
+// added or moved to another tile since go to their starting place, removed fields drop out.
+function reconcile(old, prev) {
   const def = defaultLayout();
   if (!old) return def;
+  const prevAxis = new Map(prev ? prev.dims.map(d => [d.id, d.axis]) : []);
+  const authorMoved = new Set(model.dims.filter(d => prevAxis.has(d.id) && prevAxis.get(d.id) !== d.axis).map(d => d.id));
   const dimIds = new Set(model.dims.map(d => d.id));
-  const keep = id => id === MEAS ? model.measures.length > 0 : dimIds.has(id);
-  const rows = old.rows.filter(keep), cols = old.cols.filter(keep);
-  const placed = new Set([...rows, ...cols]);
+  const keep = id => id === MEAS ? model.measures.length > 0 : dimIds.has(id) && !authorMoved.has(id);
+  const rows = old.rows.filter(keep), cols = old.cols.filter(keep), removed = old.removed.filter(keep);
+  const placed = new Set([...rows, ...cols, ...removed]);
   def.rows.forEach(id => { if (!placed.has(id)) rows.push(id); });
   def.cols.forEach(id => { if (!placed.has(id)) cols.push(id); });
   const measures = old.measures.filter(id => model.measById.has(id));
   model.measures.forEach(m => { if (!measures.includes(m.id)) measures.push(m.id); });
   const hidden = old.hidden.filter(id => model.measById.has(id));
-  return { rows, cols, measures, hidden };
+  return { rows, cols, measures, hidden, removed };
 }
 
 const visibleMeasures = () => layout.measures.filter(id => !layout.hidden.includes(id)).map(id => model.measById.get(id));
@@ -309,6 +381,32 @@ function axisTuples(levels, vis) {
   }
   out.sort((a, b) => { for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return a[i] - b[i]; return 0; });
   return out;
+}
+
+// Cell values at the grain of the fields on the grid. A cell that covers one
+// row of data shows Tableau's value as is; several rows are combined.
+const EMPTY = { f: "", s: null };
+function gridView(rowLv, colLv) {
+  const ids = [...rowLv, ...colLv].filter(id => id !== MEAS);
+  const pos = ids.map(id => model.dimPos.get(id));
+  const groups = new Map();
+  for (const r of model.records) {
+    const key = pos.map(p => r.k[p]).join(",");
+    const g = groups.get(key);
+    if (g) g.push(r); else groups.set(key, [r]);
+  }
+  const lookup = new Map(), blanked = new Set();
+  for (const [key, g] of groups) lookup.set(key, g.length === 1 ? g[0].m : combine(g, blanked));
+  return { ids, lookup, blanked };
+}
+function combine(g, blanked) {
+  return model.measures.map((m, i) => {
+    if (m.rule === "none") { blanked.add(m.id); return EMPTY; }
+    const vals = g.map(r => r.m[i].s).filter(v => typeof v === "number" && isFinite(v));
+    if (!vals.length) return EMPTY;
+    const v = vals.reduce(m.rule === "sum" ? (a, b) => a + b : m.rule === "min" ? (a, b) => Math.min(a, b) : (a, b) => Math.max(a, b));
+    return { f: m.fmt(v), s: v };
+  });
 }
 
 // Level at which each tuple first differs from the one before it.
@@ -347,10 +445,11 @@ function render() {
   const nRH = Math.max(rowLv.length, 1), nCH = Math.max(colLv.length, 1);
   const rMeasAt = rowLv.indexOf(MEAS), cMeasAt = colLv.indexOf(MEAS);
   const label = (id, idx) => id === MEAS ? vis[idx].label : model.dims[model.dimPos.get(id)].members[idx];
-  // For each model dim: [0 = rows | 1 = cols, level index on that axis]
-  const where = model.dims.map(d => {
-    const i = rowLv.indexOf(d.id);
-    return i >= 0 ? [0, i] : [1, colLv.indexOf(d.id)];
+  const view = gridView(rowLv, colLv);
+  // For each grid dim: [0 = rows | 1 = cols, level index on that axis]
+  const where = view.ids.map(id => {
+    const i = rowLv.indexOf(id);
+    return i >= 0 ? [0, i] : [1, colLv.indexOf(id)];
   });
   const fieldTag = id =>
     `<span class="ftag" data-drag="${esc(id)}" data-kind="${id === MEAS ? "meas" : "dim"}" title="Drag to move">${esc(levelName(id))}</span>`;
@@ -400,8 +499,8 @@ function render() {
       if (mi >= 0) {
         let key = "";
         for (let d = 0; d < where.length; d++) key += (d ? "," : "") + (where[d][0] === 0 ? rt : ct)[where[d][1]];
-        const rec = model.lookup.get(key);
-        if (rec) txt = rec.m[vis[mi].index].f;
+        const cells = view.lookup.get(key);
+        if (cells) txt = cells[vis[mi].index].f;
       }
       b += `<td${gbCol[c] ? ' class="gc"' : ""}>${esc(txt)}</td>`;
     }
@@ -413,7 +512,11 @@ function render() {
   grid.innerHTML = h + b;
   measureSticky();
 
-  setNotice(vis.length ? "" : "All measures are hidden. Click a measure on the Values shelf to show it.");
+  const blank = vis.filter(m => view.blanked.has(m.id)).map(m => m.label);
+  const msg = !vis.length ? "All measures are hidden. Click a measure on the Values shelf to show it."
+    : blank.length ? `${blank.join(", ")} can't be added up, so cells that combine several rows of data are blank. Drag fields from the field list onto the grid to fill them.`
+    : "";
+  setNotice(loadWarning || msg, !!loadWarning);
   diag();
 }
 
@@ -442,6 +545,12 @@ function renderShelves() {
     return `<span class="pill measure${off ? " off" : ""}" tabindex="0" data-drag="${esc(id)}" data-kind="measure" data-id="${esc(id)}"
       title="Drag to reorder. Click to ${off ? "show" : "hide"}.">${esc(model.measById.get(id).label)}</span>`;
   }).join("") || `<span class="ph">No measures on Values</span>`;
+
+  const avail = model ? model.dims.filter(d => !layout.rows.includes(d.id) && !layout.cols.includes(d.id)) : [];
+  $("side").hidden = !model || !model.dims.length;
+  $("pillsAvail").innerHTML = avail.map(d =>
+    `<span class="pill" tabindex="0" data-drag="${esc(d.id)}" data-kind="dim" data-id="${esc(d.id)}" title="${esc(d.label)}: drag onto the grid">${esc(d.label)}</span>`
+  ).join("") || `<span class="ph">Drag a field here to take it off the grid</span>`;
 }
 
 function showEmpty(title, text) {
@@ -449,15 +558,16 @@ function showEmpty(title, text) {
   $("empty").innerHTML = `<p><strong>${esc(title)}</strong>${esc(text)}</p>`;
   diag();
 }
-let baseNotice = "";   // persistent message, e.g. demo mode
+let baseNotice = "", baseError = false;   // persistent message, e.g. demo mode
 function setNotice(text, isError) {
   $("notice").textContent = text || baseNotice;
-  $("notice").className = text && isError ? "error" : "";
+  $("notice").className = (text ? isError : baseError) ? "error" : "";
 }
 
 function setModel(m) {
+  const prev = model;
   model = m;
-  layout = reconcile(layout);
+  layout = reconcile(layout, prev);
   render();
 }
 
@@ -471,9 +581,13 @@ function commit(next, movedId) {
   if (movedId) flash(movedId);
 }
 function moveField(id, zone, beforeId) {
+  const onGrid = layout.rows.includes(id) || layout.cols.includes(id);
+  if (zone === "avail" && (id === MEAS || !onGrid)) return;
   const next = structuredClone(layout);
   next.rows = next.rows.filter(x => x !== id);
   next.cols = next.cols.filter(x => x !== id);
+  next.removed = next.removed.filter(x => x !== id);
+  if (zone === "avail") { next.removed.push(id); commit(next, id); return; }
   const list = next[zone];
   const at = beforeId ? list.indexOf(beforeId) : -1;
   list.splice(at < 0 ? list.length : at, 0, id);
@@ -578,6 +692,10 @@ function zones(kind) {
   };
   if (kind === "measure") return [shelf("values")].filter(Boolean);
   out.push(shelf("cols"), shelf("rows"));
+  const side = $("side");
+  if (kind === "dim" && !side.hidden && !$("app").classList.contains("collapsed")) {
+    out.push({ zone: "avail", dir: "none", rect: side.getBoundingClientRect(), hl: [side], items: [] });
+  }
 
   // In the grid: the header area above the row-label row takes columns;
   // the row-header area on the left takes rows.
@@ -613,6 +731,7 @@ function updateTarget(x, y) {
   }
   document.body.classList.remove("nodrop");
   z.hl.forEach(el => el.classList.add("over"));
+  if (z.dir === "none") { drag.target = { zone: z.zone, beforeId: null }; marker.style.display = "none"; return; }
 
   const items = z.items.filter(it => it.id !== drag.id);
   let i = 0;
@@ -654,7 +773,13 @@ document.addEventListener("keydown", e => {
     else if (e.key === "ArrowRight" && i < list.length - 1) { e.preventDefault(); moveMeasure(id, list[i + 2] || null); refocus(); }
     return;
   }
-  const zone = layout.rows.includes(id) ? "rows" : "cols";
+  const zone = layout.rows.includes(id) ? "rows" : layout.cols.includes(id) ? "cols" : "avail";
+  if (zone === "avail") {
+    if (e.key === "ArrowUp") { e.preventDefault(); moveField(id, "cols", null); refocus(); }
+    else if (e.key === "ArrowDown" || e.key === "Enter") { e.preventDefault(); moveField(id, "rows", null); refocus(); }
+    return;
+  }
+  if ((e.key === "Delete" || e.key === "Backspace") && id !== MEAS) { e.preventDefault(); moveField(id, "avail"); refocus(); return; }
   const list = layout[zone], i = list.indexOf(id);
   if (e.key === "ArrowLeft" && i > 0) { e.preventDefault(); moveField(id, zone, list[i - 1]); refocus(); }
   else if (e.key === "ArrowRight" && i < list.length - 1) { e.preventDefault(); moveField(id, zone, list[i + 2] || null); refocus(); }
@@ -682,7 +807,7 @@ function cellOf(c) {
 async function loadFromTableau() {
   const spec = await worksheet.getVisualSpecificationAsync();
   const marks = spec.marksSpecifications[spec.activeMarksSpecificationIndex] || spec.marksSpecifications[0];
-  const enc = { rows: [], cols: [], values: [] };
+  const enc = { rows: [], cols: [], fields: [], values: [] };
   for (const e of (marks && marks.encodings) || []) {
     const ax = ENC_AXIS[e.id];
     if (ax && e.field) enc[ax].push(e.field.name);
@@ -703,16 +828,18 @@ async function loadFromTableau() {
   };
   enc.rows.forEach(n => { const c = claim(n); if (c) dims.push({ id: n, label: prettyDim(n), col: c.index, axis: "rows" }); });
   enc.cols.forEach(n => { const c = claim(n); if (c) dims.push({ id: n, label: prettyDim(n), col: c.index, axis: "cols" }); });
+  enc.fields.forEach(n => { const c = claim(n); if (c) dims.push({ id: n, label: prettyDim(n), col: c.index, axis: "fields" }); });
   enc.values.forEach(n => { const c = claim(n); if (c) measures.push({ id: n, label: stripAgg(n), col: c.index }); });
 
   const data = table.data.map(row => row.map(cellOf));
   diagLines = [
     "WORKSHEET\n  " + worksheet.name,
-    "ENCODINGS\n  Rows:    " + (enc.rows.join(", ") || "–") + "\n  Columns: " + (enc.cols.join(", ") || "–") + "\n  Values:  " + (enc.values.join(", ") || "–"),
+    "ENCODINGS\n  Rows:    " + (enc.rows.join(", ") || "–") + "\n  Columns: " + (enc.cols.join(", ") || "–") +
+      "\n  Fields:  " + (enc.fields.join(", ") || "–") + "\n  Values:  " + (enc.values.join(", ") || "–"),
     "SUMMARY DATA COLUMNS (" + data.length + " rows)\n" + cols.map(c => "  [" + c.index + "] " + c.fieldName + "  " + c.dataType).join("\n"),
     missing.length ? "NOT FOUND IN DATA\n  " + missing.join("\n  ") : ""
   ];
-  if (missing.length) setNotice("Some fields could not be read from the sheet: " + missing.join(", ") + ". Open with ?debug=1 for details.", true);
+  loadWarning = missing.length ? "Some fields could not be read from the sheet: " + missing.join(", ") + ". Open with ?debug=1 for details." : "";
   setModel(buildModel({ dims, measures, data }));
 }
 
@@ -756,7 +883,7 @@ function demoData() {
   return {
     dims: [
       { id: "Supplier", label: "Supplier", col: 0, axis: "rows" },
-      { id: "Product Type", label: "Product Type", col: 1, axis: "rows" },
+      { id: "Product Type", label: "Product Type", col: 1, axis: "fields" },
       { id: "YEAR(Calendar Date)", label: "Year of Calendar Date", col: 2, axis: "cols" }
     ],
     measures: [
@@ -769,8 +896,8 @@ function demoData() {
   };
 }
 
-function startDemo(reason) {
-  baseNotice = reason;
+function startDemo(reason, isError) {
+  baseNotice = reason; baseError = !!isError;
   diagLines = ["MODE\n  Demo data"];
   setModel(buildModel(demoData()));
 }
@@ -778,8 +905,9 @@ function startDemo(reason) {
 function diag() {
   if (!document.body.classList.contains("debug")) return;
   const extra = model ? [
-    "MODEL\n  " + model.records.length + " records" + (model.dupes ? ", " + model.dupes + " duplicate keys ignored" : "") +
-      "\n" + model.dims.map(d => "  " + d.id + ": " + d.members.length + " members").join("\n"),
+    "MODEL\n  " + model.records.length + " records" + (model.dupes ? ", " + model.dupes + " share a key with another row (combined)" : "") +
+      "\n" + model.dims.map(d => "  " + d.id + " [" + d.axis + "]: " + d.members.length + " members").join("\n") +
+      "\n" + model.measures.map(m => "  " + m.id + ": combine " + m.rule).join("\n"),
     "LAYOUT\n  " + JSON.stringify(layout)
   ] : [];
   $("diagText").textContent = [...diagLines, ...extra].filter(Boolean).join("\n\n");
@@ -789,8 +917,9 @@ function diag() {
    INIT
    ============================================================ */
 (async function init() {
-  if (qs.get("demo") === "1" || typeof tableau === "undefined" || !tableau.extensions) {
-    return startDemo("Demo data. Add this page to a worksheet as a viz extension to see your own data.");
+  if (qs.get("demo") === "1") return startDemo("Demo data.");
+  if (typeof tableau === "undefined" || !tableau.extensions) {
+    return startDemo("Couldn't load tableau.extensions.1.latest.min.js, so this is demo data. Deploy that file next to index.html.", true);
   }
   try {
     await Promise.race([
