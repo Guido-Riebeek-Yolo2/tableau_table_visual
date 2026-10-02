@@ -211,8 +211,28 @@
   }
   #formatPanel[hidden] { display: none; }
   .fp-head { display: flex; align-items: center; justify-content: space-between; padding: 8px 10px; border-bottom: 1px solid var(--line); font-weight: 600; }
-  .fp-body { flex: 1; overflow: auto; padding: 4px 0 10px; }
-  .fp-body h4 { margin: 10px 12px 4px; font-size: 11px; font-weight: 600; color: var(--ink-2); }
+  .fp-body { flex: 1; overflow: auto; padding: 0 0 10px; }
+  .fp-sec { border-bottom: 1px solid var(--line); }
+  .fp-sec > summary {
+    display: flex; align-items: center; gap: 7px; padding: 9px 12px; cursor: pointer;
+    list-style: none; font-weight: 600; user-select: none;
+  }
+  .fp-sec > summary::-webkit-details-marker { display: none; }
+  .fp-sec > summary:hover { background: var(--band); }
+  .fp-sec > summary:focus-visible { outline: 2px solid var(--drop); outline-offset: -2px; }
+  .fp-sec > summary .chev { flex: none; color: var(--ink-2); transition: transform .15s; }
+  .fp-sec[open] > summary .chev { transform: rotate(90deg); }
+  .fp-sec[open] > summary { background: var(--head); }
+  .fp-sec > summary .desc {
+    margin-left: auto; display: inline-flex; align-items: center; gap: 4px; max-width: 55%;
+    overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--ink-2); font-weight: 400; font-size: 11px;
+  }
+  .fp-sec .sw {
+    display: inline-flex; align-items: center; justify-content: center; flex: none; width: 15px; height: 15px;
+    border: 1px solid var(--line-strong); border-radius: 2px; font: 600 9px/1 var(--font); font-style: normal;
+  }
+  .fp-sec-body { padding: 4px 0 10px; }
+  .fp-sub { margin: 8px 12px 2px; font-size: 11px; font-weight: 600; color: var(--ink-2); }
   .fp-field { display: grid; grid-template-columns: 110px 1fr; gap: 8px; align-items: center; padding: 3px 12px; }
   .fp-field input[type=color] { width: 44px; height: 23px; padding: 1px; border: 1px solid var(--line-strong); border-radius: 3px; background: var(--bg); cursor: pointer; }
   .fp-field input[type=checkbox] { justify-self: start; }
@@ -226,7 +246,7 @@
   }
   .fp-style input:checked + span { background: #e8f2f7; border-color: var(--dim); color: var(--dim-d); }
   .fp-style input:focus-visible + span { outline: 2px solid var(--drop); outline-offset: 1px; }
-  .fp-hint { padding: 0 12px 2px 130px; color: var(--ink-2); font-size: 11px; }
+  .fp-hint { padding: 2px 12px; color: var(--ink-2); font-size: 11px; }
   .fp-foot { display: flex; gap: 6px; justify-content: flex-end; padding: 8px 10px; border-top: 1px solid var(--line); }
   .fp-foot .left { margin-right: auto; }
   .tool.primary { background: var(--dim); border-color: var(--dim); color: #fff; }
@@ -1258,18 +1278,33 @@ document.addEventListener("keydown", e => {
 const FONTS = ["Noto Sans", "Benton Sans", "Tableau Book", "Tableau Regular", "Segoe UI", "Arial", "Calibri", "Helvetica Neue",
   "Verdana", "Tahoma", "Trebuchet MS", "Georgia", "Times New Roman", "Consolas"];
 const ALIGN = ["left", "center", "right"];
-const FORMAT_FORM = [
-  ["Text", [["fontFamily", "Font", "font"], ["fontSize", "Size (px)", "size"], ["textColor", "Colour", "color"]]],
-  ["Field names", [["fieldColor", "Text", "color"], ["field", "Style", "style"]]],
-  ["Column headers", [["headerBg", "Background", "color"], ["headerColor", "Text", "color"], ["header", "Style", "style"],
-    ["headerAlign", "Alignment", ALIGN]]],
-  ["Row labels", [["rowHeaderBg", "Background", "color"], ["rowHeaderColor", "Text", "color"], ["rowHeader", "Style", "style"],
-    ["rowHeaderAlign", "Alignment", ALIGN]]],
-  ["Cells", [["cellBg", "Background", "color"], ["cell", "Style", "style"], ["banding", "Row banding", "bool"],
-    ["bandColor", "Band colour", "color"], ["numberAlign", "Alignment", ALIGN], ["density", "Spacing", ["compact", "normal", "roomy"]]]],
-  ["Subtotals", [["subtotalBg", "Background", "color"], ["subtotalColor", "Text", "color"], ["subtotal", "Style", "style"]]],
-  ["Grand totals", [["grandBg", "Background", "color"], ["grandColor", "Text", "color"], ["grand", "Style", "style"]]],
-  ["Lines", [["lineColor", "Grid lines", "color"], ["dividerColor", "Group dividers", "color"]]]
+// Format panel sections. desc(f) is the one-line summary shown on the collapsed section;
+// ["sub", title] inside fields starts a sub-heading.
+const swatch = (bg, ink) => `<i class="sw" style="background:${bg};color:${ink}">A</i>`;
+const styleDesc = (f, p) => ["Bold", "Italic", "Underline"].filter(s => f[p + s]).join(", ").toLowerCase() || "regular";
+const FORMAT_SECTIONS = [
+  { id: "font", title: "Font", desc: f => esc(`${f.fontFamily || "Tableau default"}, ${f.fontSize}px`),
+    fields: [["fontFamily", "Font", "font"], ["fontSize", "Size (px)", "size"], ["textColor", "Text colour", "color"]] },
+  { id: "field", title: "Field names", desc: f => swatch("#fff", f.fieldColor) + styleDesc(f, "field"),
+    fields: [["fieldColor", "Text", "color"], ["field", "Style", "style"]] },
+  { id: "header", title: "Column headers", desc: f => swatch(f.headerBg, f.headerColor) + styleDesc(f, "header"),
+    fields: [["headerBg", "Background", "color"], ["headerColor", "Text", "color"], ["header", "Style", "style"], ["headerAlign", "Alignment", ALIGN]] },
+  { id: "rowHeader", title: "Row labels", desc: f => swatch(f.rowHeaderBg, f.rowHeaderColor) + styleDesc(f, "rowHeader"),
+    fields: [["rowHeaderBg", "Background", "color"], ["rowHeaderColor", "Text", "color"], ["rowHeader", "Style", "style"], ["rowHeaderAlign", "Alignment", ALIGN]] },
+  { id: "cell", title: "Cells", desc: f => swatch(f.cellBg, f.textColor) + (f.banding ? swatch(f.bandColor, f.textColor) + "banded" : "no banding"),
+    fields: [["cellBg", "Background", "color"], ["cell", "Style", "style"], ["numberAlign", "Alignment", ALIGN],
+      ["banding", "Row banding", "bool"], ["bandColor", "Band colour", "color"]] },
+  { id: "totals", title: "Totals", desc: f => swatch(f.subtotalBg, f.subtotalColor) + swatch(f.grandBg, f.grandColor),
+    fields: [["sub", "Subtotals"], ["subtotalBg", "Background", "color"], ["subtotalColor", "Text", "color"], ["subtotal", "Style", "style"],
+      ["sub", "Grand totals"], ["grandBg", "Background", "color"], ["grandColor", "Text", "color"], ["grand", "Style", "style"]] },
+  { id: "lines", title: "Lines and spacing", desc: f => swatch(f.lineColor, f.lineColor) + swatch(f.dividerColor, f.dividerColor) + f.density,
+    fields: [["lineColor", "Grid lines", "color"], ["dividerColor", "Group dividers", "color"], ["density", "Spacing", ["compact", "normal", "roomy"]]] },
+  { id: "numbers", title: "Number formats", body: () => `<div id="fpMeasures">${measureSectionHtml()}</div>`,
+    desc: f => { const n = Object.keys(f.measureFormats).length; return n ? `${n} custom` : "Tableau's formats"; } },
+  { id: "dates", title: "Date formats", body: () => dateSectionHtml(),
+    desc: f => { const n = Object.keys(f.dateFormats).length; return n ? `${n} custom` : "Tableau's formats"; } },
+  { id: "params", title: "Parameter names", body: () => paramSectionHtml(),
+    desc: f => { const n = Object.keys(f.paramMap).length; return n ? `${n} chosen` : "automatic"; } }
 ];
 const HEX = /^#[0-9a-f]{6}$/i;
 const NUMBER_DEFAULT = { type: "number", decimals: 0, units: "", prefix: "", suffix: "", thousands: true, negative: "minus" };
@@ -1391,6 +1426,7 @@ function setFormat(f) {
   const mapChanged = changed("paramMap"), fieldsChanged = changed("measureFormats") || changed("dateFormats");
   format = f;
   applyFormat(f);
+  updateSummaries();
   if (!model || !(mapChanged || fieldsChanged)) return;
   if (mapChanged) applyParams(model);
   applyFieldFormats(model);
@@ -1403,15 +1439,13 @@ function previewText(m) {
   return `Example: ${f(Math.abs(v))}  /  ${f(-Math.abs(v))}` + (m.custom ? "" : "  (Tableau's format)");
 }
 function measureSectionHtml() {
-  const head = `<h4>Number formats</h4>`;
-  if (!model || !model.measures.length) return head + `<div class="fp-hint" style="padding-left:12px">No measures on this sheet.</div>`;
+  if (!model || !model.measures.length) return `<div class="fp-hint">No measures on this sheet.</div>`;
   if (!model.measById.has(fpMeasure)) fpMeasure = model.measures[0].id;
   const m = model.measById.get(fpMeasure), saved = format.measureFormats[fpMeasure];
   const c = { ...NUMBER_DEFAULT, ...saved }, off = saved ? "" : " disabled";
   const opt = (v, t, cur) => `<option value="${esc(v)}"${v === cur ? " selected" : ""}>${esc(t)}</option>`;
   const row = (label, input) => `<label class="fp-field"><span>${label}</span>${input}</label>`;
-  return head +
-    row("Measure", `<select data-mf-pick>${model.measures.map(x =>
+  return row("Measure", `<select data-mf-pick>${model.measures.map(x =>
       opt(x.id, x.label + (format.measureFormats[x.id] ? "  \u2022 custom" : ""), fpMeasure)).join("")}</select>`) +
     row("Format", `<select data-mf="type">${opt("auto", "Automatic (Tableau)", saved ? c.type : "auto")}` +
       `${opt("number", "Number", saved ? c.type : "")}${opt("percent", "Percentage", saved ? c.type : "")}</select>`) +
@@ -1426,12 +1460,27 @@ function measureSectionHtml() {
 }
 function dateSectionHtml() {
   const dates = model ? model.dims.filter(d => d.isDate) : [];
-  return `<h4>Date formats</h4>` + (dates.map(d => {
+  return dates.map(d => {
     const cur = format.dateFormats[d.id] || "", ex = d.times.find(t => t != null);
     return `<label class="fp-field"><span>${esc(d.label)}</span><select data-df="${esc(d.id)}"><option value="">Automatic (Tableau)</option>` +
       Object.keys(DATE_FORMATS).map(p => `<option value="${p}"${p === cur ? " selected" : ""}>${esc(ex != null ? formatDate(ex, p) : DATE_FORMATS[p])}</option>`).join("") +
       `</select></label>`;
-  }).join("") || `<div class="fp-hint" style="padding-left:12px">No date fields. Date parts like YEAR() and dates returned as text keep their own format.</div>`);
+  }).join("") || `<div class="fp-hint">No date fields. Date parts like YEAR() and dates returned as text keep their own format.</div>`;
+}
+// One choice per parameter-driven field on this sheet: which parameter names it.
+function paramSectionHtml() {
+  const pFields = model ? [...model.dims, ...model.measures].filter(f => PARAM_FIELDS.test(stripAgg(f.id))) : [];
+  return pFields.map((f, i) => {
+    const cands = paramCandidates(f.id), pick = format.paramMap[f.id] || "";
+    const auto = cands[0] ? `Automatic (${cands[0].name})` : "Automatic (no match)";
+    const opt = ([v, t]) => `<option value="${esc(v)}"${v === pick ? " selected" : ""}>${esc(t)}</option>`;
+    const others = params.filter(p => !cands.includes(p));
+    return `<label class="fp-field" for="fp-pm${i}"><span>${esc(f.baseLabel)}</span><select id="fp-pm${i}" data-pm="${esc(f.id)}">` +
+      opt(["", auto]) +
+      (cands.length ? `<optgroup label="Matching">${cands.map(p => opt([p.name, p.name])).join("")}</optgroup>` : "") +
+      (others.length ? `<optgroup label="Other parameters">${others.map(p => opt([p.name, p.name])).join("")}</optgroup>` : "") +
+      opt([NO_PARAM, "Don't rename"]) + `</select></label>`;
+  }).join("") || `<div class="fp-hint">No Grid Level or Metric Selector fields on this sheet.</div>`;
 }
 
 let savedFormat = null;
@@ -1442,10 +1491,16 @@ function openFormat() {
   savedFormat = structuredClone(format);
   renderFormatPanel();
   $("formatPanel").hidden = false;
-  $("fpBody").querySelector("input, select").focus();
+  $("fpBody").querySelector("summary").focus();
+}
+let fpOpen = "font";   // the expanded section; one at a time
+const CHEVRON = `<svg class="chev" width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><path d="M3.5 2 6.5 5l-3 3" fill="none" stroke="currentColor" stroke-width="1.4"/></svg>`;
+function updateSummaries() {
+  for (const s of FORMAT_SECTIONS) { const el = document.querySelector(`#fpBody [data-desc="${s.id}"]`); if (el) el.innerHTML = s.desc(format); }
 }
 function renderFormatPanel() {
   const field = ([key, label, kind], section) => {
+    if (key === "sub") return `<div class="fp-sub">${label}</div>`;
     const v = format[key], id = "fp-" + key;
     let input;
     if (kind === "color") input = `<input type="color" id="${id}" data-k="${key}" value="${esc(v)}">`;
@@ -1463,24 +1518,21 @@ function renderFormatPanel() {
     else input = `<input type="text" id="${id}" data-k="${key}" value="${esc(v)}" placeholder="e.g. Kp.03">`;
     return `<label class="fp-field" for="${id}"><span>${label}</span>${input}</label>`;
   };
-  // One choice per parameter-driven field on this sheet: which parameter names it.
-  const pFields = model ? [...model.dims, ...model.measures].filter(f => PARAM_FIELDS.test(stripAgg(f.id))) : [];
-  const paramSection = `<h4>Parameter names</h4>` + (pFields.map((f, i) => {
-    const cands = paramCandidates(f.id), pick = format.paramMap[f.id] || "";
-    const auto = cands[0] ? `Automatic (${cands[0].name})` : "Automatic (no match)";
-    const opt = ([v, t]) => `<option value="${esc(v)}"${v === pick ? " selected" : ""}>${esc(t)}</option>`;
-    const others = params.filter(p => !cands.includes(p));
-    return `<label class="fp-field" for="fp-pm${i}"><span>${esc(f.baseLabel)}</span><select id="fp-pm${i}" data-pm="${esc(f.id)}">` +
-      opt(["", auto]) +
-      (cands.length ? `<optgroup label="Matching">${cands.map(p => opt([p.name, p.name])).join("")}</optgroup>` : "") +
-      (others.length ? `<optgroup label="Other parameters">${others.map(p => opt([p.name, p.name])).join("")}</optgroup>` : "") +
-      opt([NO_PARAM, "Don't rename"]) + `</select></label>`;
-  }).join("") || `<div class="fp-hint" style="padding-left:12px">No Grid Level or Metric Selector fields on this sheet.</div>`);
-  $("fpBody").innerHTML = FORMAT_FORM.map(([title, fields]) => `<h4>${title}</h4>` + fields.map(f => field(f, title)).join("")).join("") +
-    `<div id="fpMeasures">${measureSectionHtml()}</div>` + dateSectionHtml() +
-    paramSection +
-    `<datalist id="fpFonts">${FONTS.map(f => `<option value="${f}">`).join("")}</datalist>`;
+  $("fpBody").innerHTML = FORMAT_SECTIONS.map(s =>
+    `<details class="fp-sec" data-sec="${s.id}"${s.id === fpOpen ? " open" : ""}>` +
+    `<summary>${CHEVRON}<span class="t">${s.title}</span><span class="desc" data-desc="${s.id}">${s.desc(format)}</span></summary>` +
+    `<div class="fp-sec-body">${s.body ? s.body() : s.fields.map(f => field(f, s.title)).join("")}</div></details>`
+  ).join("") + `<datalist id="fpFonts">${FONTS.map(f => `<option value="${f}">`).join("")}</datalist>`;
 }
+// Accordion: opening a section closes the others (toggle doesn't bubble, so listen while capturing).
+$("fpBody").addEventListener("toggle", e => {
+  const d = e.target;
+  if (!d.matches || !d.matches("details.fp-sec")) return;
+  if (d.open) {
+    fpOpen = d.dataset.sec;
+    $("fpBody").querySelectorAll("details.fp-sec[open]").forEach(o => { if (o !== d) o.open = false; });
+  } else if (fpOpen === d.dataset.sec) fpOpen = null;
+}, true);
 async function closeFormat(save) {
   if (!save) setFormat(savedFormat || format);
   else if (!LOCAL) {
