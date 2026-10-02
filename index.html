@@ -1,0 +1,815 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pivot Grid</title>
+<!-- Generic by design: the same file runs unmodified on every worksheet.
+     Fields come from the Rows / Columns / Values tiles on the Marks card. -->
+<script src="./tableau.extensions.1.latest.min.js"></script>
+
+<style>
+  :root {
+    --ink:         #33393f;
+    --ink-2:       #6b737b;
+    --line:        #e4e7ea;
+    --line-strong: #c4cad0;
+    --band:        #f6f7f8;
+    --head:        #fafbfb;
+    --bg:          #ffffff;
+    --dim:         #4a97b8;   /* Tableau's discrete-pill blue */
+    --dim-d:       #367a98;
+    --meas:        #1aa874;   /* Tableau's measure green */
+    --meas-d:      #12825a;
+    --drop:        #e8762d;   /* Tableau's orange drop indicator */
+    --font: "Benton Sans", "Segoe UI", -apple-system, BlinkMacSystemFont, Roboto, "Helvetica Neue", Arial, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body { font: 12px/1.35 var(--font); color: var(--ink); background: var(--bg); }
+  #app { height: 100%; display: flex; flex-direction: column; }
+
+  /* ---------- shelves ---------- */
+  #shelves { flex: none; border-bottom: 1px solid var(--line-strong); }
+  .shelf { display: flex; align-items: flex-start; min-height: 31px; border-bottom: 1px solid var(--line); }
+  .shelf:last-child { border-bottom: 0; }
+  .shelf.over { background: #fdf6f0; }
+  .shelf-label {
+    flex: none; width: 92px; padding: 8px 10px 0;
+    color: var(--ink-2); display: flex; gap: 6px; align-items: center;
+  }
+  .shelf-label svg { flex: none; }
+  .pills { flex: 1; display: flex; flex-wrap: wrap; gap: 4px; padding: 5px 6px; min-height: 31px; align-items: center; }
+  .pill {
+    display: inline-flex; align-items: center; gap: 5px; height: 21px; padding: 0 10px;
+    border-radius: 11px; background: var(--dim); color: #fff; font-weight: 500;
+    cursor: grab; user-select: none; -webkit-user-select: none; touch-action: none; white-space: nowrap;
+  }
+  .pill:hover { background: var(--dim-d); }
+  .pill.measure { background: var(--meas); }
+  .pill.measure:hover { background: var(--meas-d); }
+  .pill.measure.off {
+    background: transparent; color: var(--meas-d);
+    box-shadow: inset 0 0 0 1px var(--meas); text-decoration: line-through;
+  }
+  .pill.meas-names.empty { opacity: .5; }
+  .pill.lifted { opacity: .3; }
+  .pill:focus-visible, .tool:focus-visible, #showLayout:focus-visible { outline: 2px solid var(--drop); outline-offset: 2px; }
+  .ph { color: var(--ink-2); font-style: italic; padding: 0 4px; }
+
+  .tools { flex: none; display: flex; gap: 4px; padding: 5px 8px 0 4px; }
+  .tool {
+    height: 21px; padding: 0 8px; border: 1px solid var(--line-strong); border-radius: 3px;
+    background: var(--bg); color: var(--ink); font: inherit; cursor: pointer;
+    display: inline-flex; align-items: center; gap: 5px;
+  }
+  .tool:hover { background: var(--band); }
+
+  #notice { flex: none; padding: 5px 10px; background: #f2f7fa; color: var(--ink-2); border-bottom: 1px solid var(--line); }
+  #notice:empty { display: none; }
+  #notice.error { background: #fbf0ef; color: #a2403a; }
+
+  /* ---------- grid ---------- */
+  #gridWrap { flex: 1; overflow: auto; position: relative; }
+  #grid { border-collapse: separate; border-spacing: 0; font-variant-numeric: tabular-nums; }
+  #grid th, #grid td {
+    padding: 3px 9px; white-space: nowrap; background: var(--bg);
+    border-right: 1px solid var(--line); border-bottom: 1px solid var(--line);
+  }
+  #grid thead th { position: sticky; z-index: 3; background: var(--head); font-weight: 600; text-align: center; }
+  #grid thead th.corner { z-index: 5; text-align: right; font-weight: 400; color: var(--ink-2); }
+  #grid thead th.rlabel { text-align: left; color: var(--ink); font-weight: 600; }
+  #grid thead tr.lrow th { border-bottom-color: var(--line-strong); }
+  #grid th.lfill { z-index: 3; }
+  #grid tbody th { position: sticky; z-index: 2; text-align: left; font-weight: 400; vertical-align: top; }
+  #grid .last { border-right-color: var(--line-strong); }
+  #grid td { text-align: right; }
+  #grid tbody tr.odd td { background: var(--band); }
+  #grid tbody tr.gb > * { border-top: 1px solid var(--line-strong); }
+  #grid .gc { box-shadow: inset 1px 0 0 var(--line-strong); }
+  #grid th.over { background: #fdf0e6; }
+  #grid th.ch.outer { text-align: left; }
+  #grid th.ch .stick { position: sticky; left: calc(var(--lsum, 0px) + 9px); }
+
+  .ftag {
+    display: inline-block; padding: 1px 8px; margin: -1px -8px; border-radius: 9px;
+    cursor: grab; user-select: none; -webkit-user-select: none; touch-action: none;
+  }
+  .ftag:hover { background: rgba(74,151,184,.14); color: var(--dim-d); }
+  .ftag.lifted { opacity: .3; }
+
+  #empty { flex: 1; display: none; align-items: center; justify-content: center; padding: 24px; color: var(--ink-2); text-align: center; }
+  #empty p { max-width: 34em; margin: 0; }
+  #empty strong { color: var(--ink); display: block; margin-bottom: 4px; font-size: 13px; }
+  #app.is-empty #gridWrap { display: none; }
+  #app.is-empty #empty { display: flex; }
+
+  #app.collapsed #shelves { display: none; }
+  #showLayout {
+    display: none; position: fixed; top: 4px; right: 6px; z-index: 20;
+    height: 21px; padding: 0 9px; border: 1px solid var(--line-strong); border-radius: 11px;
+    background: var(--bg); color: var(--ink-2); font: inherit; cursor: pointer; opacity: .75;
+  }
+  #showLayout:hover { opacity: 1; color: var(--ink); }
+  #app.collapsed #showLayout { display: block; }
+
+  /* ---------- dragging ---------- */
+  .ghost {
+    position: fixed; left: 0; top: 0; z-index: 1000; pointer-events: none;
+    box-shadow: 0 8px 18px rgba(25, 45, 65, .28); transform-origin: 20% 50%;
+  }
+  #marker { position: fixed; display: none; z-index: 999; pointer-events: none; background: var(--drop); border-radius: 2px; }
+  body.dragging, body.dragging * { cursor: grabbing !important; }
+  body.dragging.nodrop, body.dragging.nodrop * { cursor: not-allowed !important; }
+  .landed { animation: land .7s ease-out; }
+  @keyframes land { from { box-shadow: 0 0 0 3px rgba(232,118,45,.55); } to { box-shadow: 0 0 0 0 rgba(232,118,45,0); } }
+
+  #diag { display: none; flex: none; max-height: 40%; overflow: auto; border-top: 1px solid var(--line); padding: 6px 10px; }
+  body.debug #diag { display: block; }
+  #diag pre { margin: 4px 0 0; font-size: 11px; white-space: pre-wrap; }
+
+  @media (max-width: 520px) {
+    .shelf-label { width: 70px; }
+    .tool span { display: none; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .landed { animation: none; }
+  }
+</style>
+</head>
+<body>
+<div id="app" class="is-empty">
+  <section id="shelves" aria-label="Grid layout">
+    <div class="shelf" data-zone="cols">
+      <span class="shelf-label">
+        <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path d="M2 1v10M6 1v10M10 1v10" stroke="currentColor" stroke-width="1.4"/></svg>
+        Columns
+      </span>
+      <div class="pills" id="pillsCols"></div>
+      <div class="tools">
+        <button class="tool" id="btnSwap" title="Swap rows and columns">
+          <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path d="M1 4h9M7.5 1.5 10 4 7.5 6.5M11 8H2M4.5 5.5 2 8l2.5 2.5" fill="none" stroke="currentColor" stroke-width="1.3"/></svg>
+          <span>Swap</span>
+        </button>
+        <button class="tool" id="btnReset" title="Return to the layout the author built"><span>Reset</span></button>
+        <button class="tool" id="btnHide" title="Hide the layout shelves"><span>Hide</span></button>
+      </div>
+    </div>
+    <div class="shelf" data-zone="rows">
+      <span class="shelf-label">
+        <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path d="M1 2h10M1 6h10M1 10h10" stroke="currentColor" stroke-width="1.4"/></svg>
+        Rows
+      </span>
+      <div class="pills" id="pillsRows"></div>
+    </div>
+    <div class="shelf" data-zone="values">
+      <span class="shelf-label">
+        <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path d="M9.5 1.5h-7l3.5 4.5-3.5 4.5h7" fill="none" stroke="currentColor" stroke-width="1.3"/></svg>
+        Values
+      </span>
+      <div class="pills" id="pillsValues"></div>
+    </div>
+  </section>
+  <button id="showLayout">Show layout</button>
+  <div id="notice"></div>
+  <div id="gridWrap"><table id="grid"></table></div>
+  <div id="empty"><p><strong>Loading data…</strong></p></div>
+  <div id="diag"><details open><summary>Diagnostics</summary><pre id="diagText">–</pre></details></div>
+</div>
+<div id="marker"></div>
+
+<script>
+/* ============================================================
+   CONFIG
+   ============================================================ */
+
+// Encoding ids from the .trex manifest -> grid axis.
+const ENC_AXIS = { rows: "rows", columns: "cols", values: "values" };
+
+// Where the Measure Names pill starts out when the author hasn't moved it:
+// "cols" or "rows", and its position on that axis (0 = outermost, -1 = innermost).
+// Matches the current Sheet 6 layout: Measure Names first on Columns.
+const DEFAULT_MEASURES_AXIS = "cols";
+const DEFAULT_MEASURES_AT   = 0;
+
+// Seconds to wait for Tableau before falling back to demo data.
+const INIT_TIMEOUT_S = 8;
+
+/* ============================================================ */
+
+const MEAS = "__measures__";
+const $ = id => document.getElementById(id);
+const qs = new URLSearchParams(location.search);
+if (qs.get("debug") === "1") document.body.classList.add("debug");
+
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c =>
+  ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const norm = s => String(s || "").replace(/[\s\u00A0]+/g, " ").trim().toLowerCase();
+const AGG_RE  = /^(SUM|AVG|MIN|MAX|COUNT|COUNTD|MEDIAN|ATTR|AGG|STDEV|STDEVP|VAR|VARP|PERCENTILE)\((.*)\)$/i;
+const DATE_RE = /^(YEAR|QUARTER|MONTH|WEEK|DAY|WEEKDAY|MY|QY|MDY|HOUR|MINUTE)\((.*)\)$/i;
+const DATE_WORD = { YEAR: "Year", QUARTER: "Quarter", MONTH: "Month", WEEK: "Week", DAY: "Day",
+  WEEKDAY: "Weekday", MY: "Month", QY: "Quarter", MDY: "Day", HOUR: "Hour", MINUTE: "Minute" };
+const stripAgg = n => { const m = AGG_RE.exec(String(n).trim()); return m ? m[2] : n; };
+const prettyDim = n => { const m = DATE_RE.exec(String(n).trim()); return m ? `${DATE_WORD[m[1].toUpperCase()]} of ${m[2]}` : n; };
+const natural = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
+const cmpKey = (a, b) => (typeof a === "number" && typeof b === "number") ? a - b : natural.compare(String(a), String(b));
+
+let model = null;      // the sheet's data, independent of layout
+let layout = null;     // { rows:[ids], cols:[ids], measures:[ids], hidden:[ids] }
+let worksheet = null;
+let diagLines = [];
+
+/* ============================================================
+   MODEL
+   dims:     [{ id, label, col, axis }]  axis = author's starting axis
+   measures: [{ id, label, col }]
+   data:     rows of cells { f: formatted text, s: sort key }
+   ============================================================ */
+function buildModel({ dims, measures, data }) {
+  const ds = dims.map(d => ({ ...d, members: [], index: new Map() }));
+  ds.forEach(d => {
+    const seen = new Map();
+    for (const row of data) { const c = row[d.col]; if (!seen.has(c.f)) seen.set(c.f, c.s); }
+    const entries = [...seen.entries()].sort((a, b) => cmpKey(a[1], b[1]));
+    d.members = entries.map(e => e[0]);
+    d.members.forEach((m, k) => d.index.set(m, k));
+  });
+  const records = [], lookup = new Map();
+  let dupes = 0;
+  for (const row of data) {
+    const k = ds.map(d => d.index.get(row[d.col].f));
+    const key = k.join(",");
+    if (lookup.has(key)) { dupes++; continue; }
+    const rec = { k, m: measures.map(m => row[m.col]) };
+    records.push(rec); lookup.set(key, rec);
+  }
+  return {
+    dims: ds, measures, records, lookup, dupes,
+    dimPos: new Map(ds.map((d, i) => [d.id, i])),
+    measById: new Map(measures.map((m, i) => [m.id, { ...m, index: i }]))
+  };
+}
+
+/* ============================================================
+   LAYOUT
+   ============================================================ */
+function defaultLayout() {
+  const rows = model.dims.filter(d => d.axis === "rows").map(d => d.id);
+  const cols = model.dims.filter(d => d.axis !== "rows").map(d => d.id);
+  if (model.measures.length) {
+    const list = DEFAULT_MEASURES_AXIS === "rows" ? rows : cols;
+    const at = DEFAULT_MEASURES_AT < 0 ? list.length : Math.min(DEFAULT_MEASURES_AT, list.length);
+    list.splice(at, 0, MEAS);
+  }
+  return { rows, cols, measures: model.measures.map(m => m.id), hidden: [] };
+}
+
+// Keeps the user's arrangement when the data refreshes; fields the author
+// added since go to their starting axis, removed fields drop out.
+function reconcile(old) {
+  const def = defaultLayout();
+  if (!old) return def;
+  const dimIds = new Set(model.dims.map(d => d.id));
+  const keep = id => id === MEAS ? model.measures.length > 0 : dimIds.has(id);
+  const rows = old.rows.filter(keep), cols = old.cols.filter(keep);
+  const placed = new Set([...rows, ...cols]);
+  def.rows.forEach(id => { if (!placed.has(id)) rows.push(id); });
+  def.cols.forEach(id => { if (!placed.has(id)) cols.push(id); });
+  const measures = old.measures.filter(id => model.measById.has(id));
+  model.measures.forEach(m => { if (!measures.includes(m.id)) measures.push(m.id); });
+  const hidden = old.hidden.filter(id => model.measById.has(id));
+  return { rows, cols, measures, hidden };
+}
+
+const visibleMeasures = () => layout.measures.filter(id => !layout.hidden.includes(id)).map(id => model.measById.get(id));
+const activeLevels = (list, vis) => list.filter(id => id !== MEAS || vis.length > 0);
+const levelName = id => id === MEAS ? "Measure Names" : model.dims[model.dimPos.get(id)].label;
+
+/* ============================================================
+   PIVOT
+   One tuple per header path. Tuples hold member indices, aligned with
+   the axis levels; the Measure Names level holds a visible-measure index.
+   Only combinations that exist in the data are produced, as in Tableau.
+   ============================================================ */
+function axisTuples(levels, vis) {
+  if (!levels.length) return [[]];
+  const pos = levels.map(id => id === MEAS ? -1 : model.dimPos.get(id));
+  const dimAt = pos.map((p, i) => p >= 0 ? i : -1).filter(i => i >= 0);
+  const combos = new Map();
+  for (const r of model.records) {
+    const t = dimAt.map(i => r.k[pos[i]]);
+    const key = t.join(",");
+    if (!combos.has(key)) combos.set(key, t);
+  }
+  const mAt = levels.indexOf(MEAS);
+  const out = [];
+  for (const t of combos.values()) {
+    if (mAt < 0) { out.push(t); continue; }
+    for (let mi = 0; mi < vis.length; mi++) { const u = t.slice(); u.splice(mAt, 0, mi); out.push(u); }
+  }
+  out.sort((a, b) => { for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return a[i] - b[i]; return 0; });
+  return out;
+}
+
+// Level at which each tuple first differs from the one before it.
+const firstDiff = T => T.map((t, i) => {
+  if (i === 0) return 0;
+  const p = T[i - 1];
+  for (let j = 0; j < t.length; j++) if (t[j] !== p[j]) return j;
+  return t.length;
+});
+// Span length at each run start for a given level, 0 elsewhere.
+const runLens = (fd, lvl) => {
+  const out = new Array(fd.length).fill(0);
+  let start = 0;
+  for (let i = 1; i <= fd.length; i++) if (i === fd.length || fd[i] <= lvl) { out[start] = i - start; start = i; }
+  return out;
+};
+
+/* ============================================================
+   RENDER
+   ============================================================ */
+function render() {
+  renderShelves();
+  const app = $("app");
+  if (!model || !model.dims.length && !model.measures.length) {
+    return showEmpty("Add fields to start",
+      "On the Marks card, drag dimensions onto Rows or Columns and measures onto Values.");
+  }
+  if (!model.records.length) {
+    return showEmpty("No data to show", "The filters on this sheet return no rows. Change a filter to see values here.");
+  }
+  app.classList.remove("is-empty");
+
+  const vis = visibleMeasures();
+  const rowLv = activeLevels(layout.rows, vis), colLv = activeLevels(layout.cols, vis);
+  const rowT = axisTuples(rowLv, vis), colT = axisTuples(colLv, vis);
+  const nRH = Math.max(rowLv.length, 1), nCH = Math.max(colLv.length, 1);
+  const rMeasAt = rowLv.indexOf(MEAS), cMeasAt = colLv.indexOf(MEAS);
+  const label = (id, idx) => id === MEAS ? vis[idx].label : model.dims[model.dimPos.get(id)].members[idx];
+  // For each model dim: [0 = rows | 1 = cols, level index on that axis]
+  const where = model.dims.map(d => {
+    const i = rowLv.indexOf(d.id);
+    return i >= 0 ? [0, i] : [1, colLv.indexOf(d.id)];
+  });
+  const fieldTag = id =>
+    `<span class="ftag" data-drag="${esc(id)}" data-kind="${id === MEAS ? "meas" : "dim"}" title="Drag to move">${esc(levelName(id))}</span>`;
+  const ph = `<span class="ph">Drop a field here</span>`;
+
+  const cFD = firstDiff(colT), rFD = firstDiff(rowT);
+  const gbCol = colT.map((_, c) => c > 0 && cFD[c] < nCH - 1);
+
+  // ---- column headers: one row per column level, then the row-label row
+  let h = "<thead>";
+  for (let L = 0; L < nCH; L++) {
+    const id = colLv[L];
+    h += `<tr class="hr">` +
+      `<th class="corner clabel last" colspan="${nRH}" style="top:var(--t${L},0);left:0" data-id="${id ? esc(id) : ""}">${id ? fieldTag(id) : ph}</th>`;
+    const runs = runLens(cFD, L);
+    for (let c = 0; c < colT.length; c++) {
+      if (!runs[c]) continue;
+      // Outer headers that span several columns keep their label in view while scrolling sideways.
+      const outer = L < nCH - 1 && runs[c] > 1;
+      const txt = id ? esc(label(id, colT[c][L])) : "";
+      h += `<th class="ch${gbCol[c] ? " gc" : ""}${outer ? " outer" : ""}" colspan="${runs[c]}" style="top:var(--t${L},0)">${outer ? `<span class="stick">${txt}</span>` : txt}</th>`;
+    }
+    h += "</tr>";
+  }
+  h += `<tr class="hr lrow">`;
+  for (let i = 0; i < nRH; i++) {
+    const id = rowLv[i];
+    h += `<th class="corner rlabel${i === nRH - 1 ? " last" : ""}" style="top:var(--t${nCH},0);left:var(--l${i},0)" data-id="${id ? esc(id) : ""}">${id ? fieldTag(id) : ph}</th>`;
+  }
+  h += `<th class="lfill" colspan="${colT.length}" style="top:var(--t${nCH},0)"></th></tr></thead>`;
+
+  // ---- body
+  const rRuns = rowLv.map((_, i) => runLens(rFD, i));
+  let b = "<tbody>";
+  for (let r = 0; r < rowT.length; r++) {
+    const rt = rowT[r];
+    b += `<tr class="${r % 2 ? "odd" : ""}${r > 0 && rFD[r] < nRH - 1 ? " gb" : ""}">`;
+    if (!rowLv.length) b += `<th class="rh last" style="left:0"></th>`;
+    for (let i = 0; i < rowLv.length; i++) {
+      const n = rRuns[i][r];
+      if (n) b += `<th class="rh${i === nRH - 1 ? " last" : ""}" rowspan="${n}" style="left:var(--l${i},0)">${esc(label(rowLv[i], rt[i]))}</th>`;
+    }
+    for (let c = 0; c < colT.length; c++) {
+      const ct = colT[c];
+      const mi = rMeasAt >= 0 ? rt[rMeasAt] : cMeasAt >= 0 ? ct[cMeasAt] : -1;
+      let txt = "";
+      if (mi >= 0) {
+        let key = "";
+        for (let d = 0; d < where.length; d++) key += (d ? "," : "") + (where[d][0] === 0 ? rt : ct)[where[d][1]];
+        const rec = model.lookup.get(key);
+        if (rec) txt = rec.m[vis[mi].index].f;
+      }
+      b += `<td${gbCol[c] ? ' class="gc"' : ""}>${esc(txt)}</td>`;
+    }
+    b += "</tr>";
+  }
+  b += "</tbody>";
+
+  const grid = $("grid");
+  grid.innerHTML = h + b;
+  measureSticky();
+
+  setNotice(vis.length ? "" : "All measures are hidden. Click a measure on the Values shelf to show it.");
+  diag();
+}
+
+// Sticky header rows and row-header columns need pixel offsets.
+function measureSticky() {
+  const grid = $("grid");
+  if (!grid.tHead) return;
+  let t = 0;
+  [...grid.tHead.rows].forEach((tr, i) => { grid.style.setProperty(`--t${i}`, t + "px"); t += tr.getBoundingClientRect().height; });
+  let l = 0;
+  grid.querySelectorAll("th.rlabel").forEach((th, i) => { grid.style.setProperty(`--l${i}`, l + "px"); l += th.getBoundingClientRect().width; });
+  grid.style.setProperty("--lsum", l + "px");
+}
+
+function renderShelves() {
+  if (!layout) return;
+  const vis = model ? visibleMeasures() : [];
+  const pill = id => id === MEAS
+    ? `<span class="pill meas-names${vis.length ? "" : " empty"}" tabindex="0" data-drag="${MEAS}" data-kind="meas" data-id="${MEAS}" title="Drag to move all measures">Measure Names</span>`
+    : `<span class="pill" tabindex="0" data-drag="${esc(id)}" data-kind="dim" data-id="${esc(id)}" title="Drag to move">${esc(levelName(id))}</span>`;
+  const empty = `<span class="ph">Drag fields here</span>`;
+  $("pillsCols").innerHTML = layout.cols.map(pill).join("") || empty;
+  $("pillsRows").innerHTML = layout.rows.map(pill).join("") || empty;
+  $("pillsValues").innerHTML = layout.measures.map(id => {
+    const off = layout.hidden.includes(id);
+    return `<span class="pill measure${off ? " off" : ""}" tabindex="0" data-drag="${esc(id)}" data-kind="measure" data-id="${esc(id)}"
+      title="Drag to reorder. Click to ${off ? "show" : "hide"}.">${esc(model.measById.get(id).label)}</span>`;
+  }).join("") || `<span class="ph">No measures on Values</span>`;
+}
+
+function showEmpty(title, text) {
+  $("app").classList.add("is-empty");
+  $("empty").innerHTML = `<p><strong>${esc(title)}</strong>${esc(text)}</p>`;
+  diag();
+}
+let baseNotice = "";   // persistent message, e.g. demo mode
+function setNotice(text, isError) {
+  $("notice").textContent = text || baseNotice;
+  $("notice").className = text && isError ? "error" : "";
+}
+
+function setModel(m) {
+  model = m;
+  layout = reconcile(layout);
+  render();
+}
+
+/* ============================================================
+   LAYOUT CHANGES
+   ============================================================ */
+function commit(next, movedId) {
+  if (JSON.stringify(next) === JSON.stringify(layout)) return;
+  layout = next;
+  render();
+  if (movedId) flash(movedId);
+}
+function moveField(id, zone, beforeId) {
+  const next = structuredClone(layout);
+  next.rows = next.rows.filter(x => x !== id);
+  next.cols = next.cols.filter(x => x !== id);
+  const list = next[zone];
+  const at = beforeId ? list.indexOf(beforeId) : -1;
+  list.splice(at < 0 ? list.length : at, 0, id);
+  commit(next, id);
+}
+function moveMeasure(id, beforeId) {
+  const next = structuredClone(layout);
+  next.measures = next.measures.filter(x => x !== id);
+  const at = beforeId ? next.measures.indexOf(beforeId) : -1;
+  next.measures.splice(at < 0 ? next.measures.length : at, 0, id);
+  commit(next, id);
+}
+function toggleMeasure(id) {
+  const next = structuredClone(layout);
+  next.hidden = next.hidden.includes(id) ? next.hidden.filter(x => x !== id) : [...next.hidden, id];
+  commit(next, id);
+}
+function flash(id) {
+  document.querySelectorAll(`[data-drag="${CSS.escape(id)}"]`).forEach(el => {
+    el.classList.remove("landed"); void el.offsetWidth; el.classList.add("landed");
+  });
+}
+
+$("btnSwap").onclick  = () => layout && commit({ ...structuredClone(layout), rows: layout.cols.slice(), cols: layout.rows.slice() });
+$("btnReset").onclick = () => model && commit(defaultLayout());
+$("btnHide").onclick  = () => { $("app").classList.add("collapsed"); measureSticky(); };
+$("showLayout").onclick = () => { $("app").classList.remove("collapsed"); measureSticky(); };
+
+/* ============================================================
+   DRAG AND DROP
+   Pointer events rather than HTML5 drag-and-drop: consistent in
+   Tableau Desktop's browser, on Server/Cloud, and on touch screens.
+   ============================================================ */
+let drag = null;
+const marker = $("marker");
+
+document.addEventListener("pointerdown", e => {
+  if (e.button !== 0 || !layout) return;
+  const src = e.target.closest("[data-drag]");
+  if (!src) return;
+  e.preventDefault();
+  const r = src.getBoundingClientRect();
+  drag = { src, id: src.dataset.drag, kind: src.dataset.kind, x0: e.clientX, y0: e.clientY,
+           dx: e.clientX - r.left, dy: e.clientY - r.top, on: false, target: null };
+});
+
+document.addEventListener("pointermove", e => {
+  if (!drag) return;
+  if (!drag.on) {
+    if (Math.hypot(e.clientX - drag.x0, e.clientY - drag.y0) < 4) return;
+    startDrag();
+  }
+  drag.ghost.style.transform = `translate(${e.clientX - drag.dx}px, ${e.clientY - drag.dy}px) rotate(-2deg) scale(1.04)`;
+  updateTarget(e.clientX, e.clientY);
+});
+
+document.addEventListener("pointerup", () => {
+  if (!drag) return;
+  const d = drag;
+  endDrag();
+  if (!d.on) {
+    if (d.kind === "measure") toggleMeasure(d.id);
+    return;
+  }
+  if (!d.target) return;
+  if (d.kind === "measure") moveMeasure(d.id, d.target.beforeId);
+  else moveField(d.id, d.target.zone, d.target.beforeId);
+});
+document.addEventListener("pointercancel", () => drag && endDrag());
+
+function startDrag() {
+  drag.on = true;
+  const g = document.createElement("span");
+  g.className = "ghost pill" + (drag.kind === "measure" ? " measure" : "");
+  g.textContent = drag.src.textContent.trim();
+  document.body.appendChild(g);
+  drag.ghost = g;
+  document.querySelectorAll(`[data-drag="${CSS.escape(drag.id)}"]`).forEach(el => el.classList.add("lifted"));
+  document.body.classList.add("dragging");
+}
+
+function endDrag() {
+  if (drag.ghost) drag.ghost.remove();
+  document.querySelectorAll(".lifted").forEach(el => el.classList.remove("lifted"));
+  clearOver();
+  marker.style.display = "none";
+  document.body.classList.remove("dragging", "nodrop");
+  drag = null;
+}
+
+function clearOver() { document.querySelectorAll(".over").forEach(el => el.classList.remove("over")); }
+
+// Drop zones are measured on every move, so scrolling mid-drag is fine.
+function zones(kind) {
+  const out = [];
+  const shelf = name => {
+    const el = document.querySelector(`.shelf[data-zone="${name}"]`);
+    if (!el || $("app").classList.contains("collapsed")) return null;
+    return { zone: name, dir: "wrap", rect: el.getBoundingClientRect(), hl: [el],
+      pillsRect: el.querySelector(".pills").getBoundingClientRect(),
+      items: [...el.querySelectorAll(".pill")].map(p => ({ id: p.dataset.id, rect: p.getBoundingClientRect() })) };
+  };
+  if (kind === "measure") return [shelf("values")].filter(Boolean);
+  out.push(shelf("cols"), shelf("rows"));
+
+  // In the grid: the header area above the row-label row takes columns;
+  // the row-header area on the left takes rows.
+  const grid = $("grid"), lrow = grid.querySelector("tr.lrow");
+  if (grid.tHead && lrow && !$("app").classList.contains("is-empty")) {
+    const wr = $("gridWrap").getBoundingClientRect();
+    const lr = lrow.getBoundingClientRect();
+    const cl = [...grid.querySelectorAll("th.clabel")];
+    const rl = [...grid.querySelectorAll("th.rlabel")];
+    const rhRight = rl.length ? rl[rl.length - 1].getBoundingClientRect().right : wr.left + 60;
+    out.push({ zone: "cols", dir: "v", hl: cl,
+      rect: { left: wr.left, right: wr.right, top: wr.top, bottom: lr.top },
+      span: { left: wr.left, right: Math.min(wr.right, grid.getBoundingClientRect().right) },
+      items: cl.filter(th => th.dataset.id).map(th => ({ id: th.dataset.id, rect: th.getBoundingClientRect() })),
+      emptyRect: cl[0] && !cl[0].dataset.id ? cl[0].getBoundingClientRect() : null });
+    out.push({ zone: "rows", dir: "h", hl: rl,
+      rect: { left: wr.left, right: Math.min(rhRight, wr.right), top: lr.top, bottom: wr.bottom },
+      items: rl.filter(th => th.dataset.id).map(th => ({ id: th.dataset.id, rect: th.getBoundingClientRect() })),
+      emptyRect: rl[0] && !rl[0].dataset.id ? rl[0].getBoundingClientRect() : null });
+  }
+  return out.filter(Boolean);
+}
+
+const inside = (r, x, y) => x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
+
+function updateTarget(x, y) {
+  clearOver();
+  const z = zones(drag.kind).find(z => inside(z.rect, x, y));
+  if (!z) {
+    drag.target = null; marker.style.display = "none";
+    document.body.classList.add("nodrop");
+    return;
+  }
+  document.body.classList.remove("nodrop");
+  z.hl.forEach(el => el.classList.add("over"));
+
+  const items = z.items.filter(it => it.id !== drag.id);
+  let i = 0;
+  for (; i < items.length; i++) {
+    const r = items[i].rect;
+    if (z.dir === "v") { if (y < r.top + r.height / 2) break; }
+    else if (z.dir === "h") { if (x < r.left + r.width / 2) break; }
+    else if (y < r.top || (y <= r.bottom && x < r.left + r.width / 2)) break;
+  }
+  drag.target = { zone: z.zone, beforeId: items[i] ? items[i].id : null };
+
+  // Marker: a vertical bar between pills, or a horizontal bar between header rows.
+  const m = marker.style;
+  m.display = "block";
+  if (z.dir === "v") {
+    const yy = items[i] ? items[i].rect.top : items.length ? items[items.length - 1].rect.bottom : (z.emptyRect || z.rect).bottom;
+    Object.assign(m, { left: z.span.left + "px", top: (yy - 1.5) + "px", width: (z.span.right - z.span.left) + "px", height: "3px" });
+  } else {
+    let xx, ref;
+    if (items[i]) { ref = items[i].rect; xx = ref.left - (z.dir === "wrap" ? 3.5 : 1.5); }
+    else if (items.length) { ref = items[items.length - 1].rect; xx = ref.right + (z.dir === "wrap" ? 1 : -1.5); }
+    else { ref = z.emptyRect || z.pillsRect || z.rect; xx = ref.left + 4; }
+    Object.assign(m, { left: xx + "px", top: (ref.top + 1) + "px", width: "3px", height: (ref.height - 2) + "px" });
+  }
+}
+
+document.addEventListener("keydown", e => {
+  if (e.key === "Escape" && drag) { endDrag(); return; }
+  const p = e.target.closest && e.target.closest(".pill");
+  if (!p || !layout) return;
+  const id = p.dataset.id, kind = p.dataset.kind;
+  const refocus = () => requestAnimationFrame(() => {
+    const el = document.querySelector(`.pill[data-id="${CSS.escape(id)}"]`); if (el) el.focus();
+  });
+  if (kind === "measure") {
+    const list = layout.measures, i = list.indexOf(id);
+    if (e.key === " " || e.key === "Enter") { e.preventDefault(); toggleMeasure(id); refocus(); }
+    else if (e.key === "ArrowLeft" && i > 0) { e.preventDefault(); moveMeasure(id, list[i - 1]); refocus(); }
+    else if (e.key === "ArrowRight" && i < list.length - 1) { e.preventDefault(); moveMeasure(id, list[i + 2] || null); refocus(); }
+    return;
+  }
+  const zone = layout.rows.includes(id) ? "rows" : "cols";
+  const list = layout[zone], i = list.indexOf(id);
+  if (e.key === "ArrowLeft" && i > 0) { e.preventDefault(); moveField(id, zone, list[i - 1]); refocus(); }
+  else if (e.key === "ArrowRight" && i < list.length - 1) { e.preventDefault(); moveField(id, zone, list[i + 2] || null); refocus(); }
+  else if (e.key === "ArrowUp" && zone === "rows") { e.preventDefault(); moveField(id, "cols", null); refocus(); }
+  else if (e.key === "ArrowDown" && zone === "cols") { e.preventDefault(); moveField(id, "rows", null); refocus(); }
+});
+
+/* ============================================================
+   TABLEAU
+   ============================================================ */
+function matchColumn(name, cols) {
+  const n = norm(name), s = norm(stripAgg(name));
+  return cols.find(c => c.fieldName === name)
+      || cols.find(c => norm(c.fieldName) === n)
+      || cols.find(c => norm(stripAgg(c.fieldName)) === s);
+}
+
+function cellOf(c) {
+  const nv = c.nativeValue;
+  const f = c.formattedValue != null ? String(c.formattedValue) : String(c.value ?? "");
+  const s = typeof nv === "number" ? nv : nv instanceof Date ? nv.getTime() : f;
+  return { f, s };
+}
+
+async function loadFromTableau() {
+  const spec = await worksheet.getVisualSpecificationAsync();
+  const marks = spec.marksSpecifications[spec.activeMarksSpecificationIndex] || spec.marksSpecifications[0];
+  const enc = { rows: [], cols: [], values: [] };
+  for (const e of (marks && marks.encodings) || []) {
+    const ax = ENC_AXIS[e.id];
+    if (ax && e.field) enc[ax].push(e.field.name);
+  }
+
+  const reader = await worksheet.getSummaryDataReaderAsync(undefined, { ignoreSelection: true, applyWorksheetFormatting: true });
+  let table;
+  try { table = await reader.getAllPagesAsync(); }
+  finally { await reader.releaseAsync(); }
+
+  const cols = table.columns, used = new Set(), missing = [];
+  const dims = [], measures = [];
+  const claim = name => {
+    const c = matchColumn(name, cols);
+    if (!c) { missing.push(name); return null; }
+    if (used.has(c.index)) return null;
+    used.add(c.index); return c;
+  };
+  enc.rows.forEach(n => { const c = claim(n); if (c) dims.push({ id: n, label: prettyDim(n), col: c.index, axis: "rows" }); });
+  enc.cols.forEach(n => { const c = claim(n); if (c) dims.push({ id: n, label: prettyDim(n), col: c.index, axis: "cols" }); });
+  enc.values.forEach(n => { const c = claim(n); if (c) measures.push({ id: n, label: stripAgg(n), col: c.index }); });
+
+  const data = table.data.map(row => row.map(cellOf));
+  diagLines = [
+    "WORKSHEET\n  " + worksheet.name,
+    "ENCODINGS\n  Rows:    " + (enc.rows.join(", ") || "–") + "\n  Columns: " + (enc.cols.join(", ") || "–") + "\n  Values:  " + (enc.values.join(", ") || "–"),
+    "SUMMARY DATA COLUMNS (" + data.length + " rows)\n" + cols.map(c => "  [" + c.index + "] " + c.fieldName + "  " + c.dataType).join("\n"),
+    missing.length ? "NOT FOUND IN DATA\n  " + missing.join("\n  ") : ""
+  ];
+  if (missing.length) setNotice("Some fields could not be read from the sheet: " + missing.join(", ") + ". Open with ?debug=1 for details.", true);
+  setModel(buildModel({ dims, measures, data }));
+}
+
+let loading = null, reloadQueued = false;
+function refreshFromTableau() {
+  if (loading) { reloadQueued = true; return; }
+  loading = loadFromTableau()
+    .catch(err => { setNotice("Couldn't read the sheet's data: " + err.message, true); console.error(err); })
+    .finally(() => { loading = null; if (reloadQueued) { reloadQueued = false; refreshFromTableau(); } });
+}
+
+/* ============================================================
+   DEMO DATA (used when the page isn't running inside Tableau)
+   ============================================================ */
+function demoData() {
+  let seed = 7;
+  const rnd = () => { seed |= 0; seed = seed + 0x6D2B79F5 | 0; let t = Math.imul(seed ^ seed >>> 15, 1 | seed);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; };
+  const fmt = new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 });
+  const suppliers = ["1x2Network", "3Oaks", "7rings", "100HP Gaming", "155.io", "7777Gaming", "A Live", "AccaMAX",
+    "Alea", "Amusnet", "Animo", "Apparat Gaming", "AvatarUX", "Aviatrix", "Barbara Bang", "Belatra", "Betsoft",
+    "BGaming", "Big Daddy", "Booming Games", "Bragg Gaming", "BulBul", "Caleta Gaming", "Endorphina", "Evolution",
+    "Evoplay", "Ezugi", "Fantasma"];
+  const liveFirst = new Set(["A Live", "Evolution", "Ezugi"]);
+  const data = [];
+  for (const s of suppliers) {
+    const products = liveFirst.has(s) ? ["Live casino", "Table games"] : rnd() < .3 ? ["Slots", "Table games"] : ["Slots"];
+    const scale = Math.exp(Math.log(2e3) + rnd() * Math.log(1e6)) * (s === "Evolution" ? 300 : 1);
+    for (const p of products) {
+      const share = p === "Table games" ? .15 + rnd() * .2 : 1;
+      for (const y of [2025, 2026]) {
+        const bet = scale * share * (y === 2025 ? .7 + rnd() * .2 : 1);
+        const qty = bet * (.3 + rnd() * 2);
+        const bonusBet = rnd() < .35 ? bet * rnd() * .01 : 0;
+        const bonusWin = bonusBet * (.6 + rnd() * .8);
+        const n = v => ({ f: fmt.format(v), s: v });
+        data.push([{ f: s, s }, { f: p, s: p }, { f: String(y), s: y }, n(bet), n(qty), n(bonusBet), n(bonusWin)]);
+      }
+    }
+  }
+  return {
+    dims: [
+      { id: "Supplier", label: "Supplier", col: 0, axis: "rows" },
+      { id: "Product Type", label: "Product Type", col: 1, axis: "rows" },
+      { id: "YEAR(Calendar Date)", label: "Year of Calendar Date", col: 2, axis: "cols" }
+    ],
+    measures: [
+      { id: "SUM(Bet Eur)", label: "Bet Eur", col: 3 },
+      { id: "SUM(Bet Qty)", label: "Bet Qty", col: 4 },
+      { id: "SUM(Bonus Bet Eur)", label: "Bonus Bet Eur", col: 5 },
+      { id: "SUM(Bonus Win Eur)", label: "Bonus Win Eur", col: 6 }
+    ],
+    data
+  };
+}
+
+function startDemo(reason) {
+  baseNotice = reason;
+  diagLines = ["MODE\n  Demo data"];
+  setModel(buildModel(demoData()));
+}
+
+function diag() {
+  if (!document.body.classList.contains("debug")) return;
+  const extra = model ? [
+    "MODEL\n  " + model.records.length + " records" + (model.dupes ? ", " + model.dupes + " duplicate keys ignored" : "") +
+      "\n" + model.dims.map(d => "  " + d.id + ": " + d.members.length + " members").join("\n"),
+    "LAYOUT\n  " + JSON.stringify(layout)
+  ] : [];
+  $("diagText").textContent = [...diagLines, ...extra].filter(Boolean).join("\n\n");
+}
+
+/* ============================================================
+   INIT
+   ============================================================ */
+(async function init() {
+  if (qs.get("demo") === "1" || typeof tableau === "undefined" || !tableau.extensions) {
+    return startDemo("Demo data. Add this page to a worksheet as a viz extension to see your own data.");
+  }
+  try {
+    await Promise.race([
+      tableau.extensions.initializeAsync(),
+      new Promise((_, rej) => setTimeout(() => rej(new Error("timeout")), INIT_TIMEOUT_S * 1000))
+    ]);
+  } catch (e) {
+    return startDemo("Not running inside Tableau, so this is demo data.");
+  }
+  worksheet = tableau.extensions.worksheetContent && tableau.extensions.worksheetContent.worksheet;
+  if (!worksheet) {
+    return showEmpty("Add this as a viz extension",
+      "This extension draws a worksheet. On a sheet, open the mark type menu on the Marks card and choose Add Extension.");
+  }
+  worksheet.addEventListener(tableau.TableauEventType.SummaryDataChanged, refreshFromTableau);
+  refreshFromTableau();
+})();
+
+if (document.fonts && document.fonts.ready) document.fonts.ready.then(measureSticky);
+</script>
+</body>
+</html>

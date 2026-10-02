@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest manifest-version="0.1" xmlns="http://www.tableau.com/xml/extension_manifest">
+  <worksheet-extension id="com.yourcompany.pivotgrid" extension-version="0.1.0">
+    <default-locale>en_US</default-locale>
+    <name resource-id="name"/>
+    <description>A text table that viewers can rearrange: drag fields between rows and columns, reorder and hide measures.</description>
+    <author name="Reporting Team"
+            email="reporting@yourcompany.com"
+            organization="Your Company"
+            website="https://yourcompany.com"/>
+    <min-api-version>1.11</min-api-version>
+
+    <source-location>
+      <url>https://guido-riebeek-yolo2.github.io/tableau_export/pivot-grid/index.html</url>
+    </source-location>
+
+    <icon>iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAAW0lEQVR42mPwq1xOU8QwasGoBUjoPxIYtWDUglELhowF/4kG5PuAQtOJCiJKTCc2Dsg2nYRIJs90fBZgGoTVdIL2kWABXJCgMvItIEMZA+WZYMRaMNouGj4WAAB3K7TZiLSwFgAAAABJRU5ErkJggg==</icon>
+
+    <permissions>
+      <permission>full data</permission>
+    </permissions>
+
+    <!-- Tiles that appear on the Marks card. The ids must match ENC_AXIS in index.html. -->
+    <encoding id="rows">
+      <display-name resource-id="enc_rows">Rows</display-name>
+      <role-spec>
+        <role-type>discrete-dimension</role-type>
+      </role-spec>
+      <fields max-count="10"/>
+    </encoding>
+    <encoding id="columns">
+      <display-name resource-id="enc_columns">Columns</display-name>
+      <role-spec>
+        <role-type>discrete-dimension</role-type>
+      </role-spec>
+      <fields max-count="10"/>
+    </encoding>
+    <encoding id="values">
+      <display-name resource-id="enc_values">Values</display-name>
+      <role-spec>
+        <role-type>continuous-measure</role-type>
+      </role-spec>
+      <fields max-count="30"/>
+    </encoding>
+  </worksheet-extension>
+
+  <resources>
+    <resource id="name">
+      <text locale="en_US">Pivot Grid</text>
+    </resource>
+    <resource id="enc_rows">
+      <text locale="en_US">Rows</text>
+    </resource>
+    <resource id="enc_columns">
+      <text locale="en_US">Columns</text>
+    </resource>
+    <resource id="enc_values">
+      <text locale="en_US">Values</text>
+    </resource>
+  </resources>
+</manifest>
