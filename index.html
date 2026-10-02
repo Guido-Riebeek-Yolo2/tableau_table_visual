@@ -400,9 +400,16 @@ const DEFAULT_FORMAT = {
   subtotalBg: "#eef4f7", subtotalColor: "#33393f", subtotalBold: true, subtotalItalic: false, subtotalUnderline: false,
   grandBg: "#e2edf2", grandColor: "#33393f", grandBold: true, grandItalic: false, grandUnderline: false,
   lineColor: "#e4e7ea", dividerColor: "#c4cad0",
-  paramMap: {}   // field id -> parameter name that names it; NO_PARAM = don't rename
+  paramMap: {},  // field id -> parameter name that names it; NO_PARAM = don't rename
+  measureFormats: {},  // measure id -> { type, decimals, units, prefix, suffix, thousands, negative }; absent = Tableau's format
+  dateFormats: {}      // date dimension id -> DATE_FORMATS key; absent = Tableau's format
 };
 const NO_PARAM = "__none__";
+const DATE_FORMATS = {
+  "yyyy-MM-dd": "2026-01-31", "dd/MM/yyyy": "31/01/2026", "MM/dd/yyyy": "01/31/2026", "d MMM yyyy": "31 Jan 2026",
+  "MMM yyyy": "Jan 2026", "MMMM yyyy": "January 2026", "yyyy-MM": "2026-01", "Qq yyyy": "Q1 2026", "yyyy": "2026",
+  "yyyy-MM-dd HH:mm": "2026-01-31 14:05"
+};
 
 // Seconds before telling the user we're still waiting for Tableau.
 // When opened locally (file:// or localhost) it falls back to demo data instead.
@@ -536,6 +543,9 @@ function buildModel({ dims, measures, data }) {
     const entries = [...seen.entries()].sort((a, b) => cmpKey(a[1], b[1]));
     d.members = entries.map(e => e[0]);
     d.members.forEach((m, k) => d.index.set(m, k));
+    // True dates (not date parts like YEAR) can be reformatted; s holds the UTC time in ms.
+    d.isDate = data.some(row => row[d.col].dt);
+    if (d.isDate) d.times = entries.map(e => typeof e[1] === "number" ? e[1] : null);
   });
   const keys = new Set();
   const records = data.map(row => {
@@ -543,7 +553,10 @@ function buildModel({ dims, measures, data }) {
     keys.add(k.join(","));
     return { k, m: measures.map(m => row[m.col]) };
   });
-  const ms = measures.map(m => ({ ...m, baseLabel: m.label, rule: ruleOf(m.id), fmt: inferFormat(data.map(r => r[m.col])) }));
+  const ms = measures.map(m => ({
+    ...m, baseLabel: m.label, rule: ruleOf(m.id), fmt: inferFormat(data.map(r => r[m.col])),
+    sample: (data.find(r => typeof r[m.col].s === "number" && r[m.col].s) || [])[m.col]?.s
+  }));
   return {
     dims: ds, measures: ms, records, dupes: records.length - keys.size,
     dimPos: new Map(ds.map((d, i) => [d.id, i])),
@@ -707,7 +720,11 @@ function buildGrid() {
   const vis = visibleMeasures();
   const rowLv = activeLevels(layout.rows, vis), colLv = activeLevels(layout.cols, vis);
   const rMeasAt = rowLv.indexOf(MEAS), cMeasAt = colLv.indexOf(MEAS);
-  const label = (id, idx) => id === MEAS ? vis[idx].label : model.dims[model.dimPos.get(id)].members[idx];
+  const label = (id, idx) => {
+    if (id === MEAS) return vis[idx].label;
+    const d = model.dims[model.dimPos.get(id)];
+    return d.labels ? d.labels[idx] : d.members[idx];
+  };
   const fixedOf = (lv, t) => lv.flatMap((id, i) => id !== MEAS && t[i] >= 0 ? [[model.dimPos.get(id), t[i]]] : []);
   const subOf = lv => new Set(lv.map((id, L) => layout.totals.sub.includes(id) ? L : -1).filter(L => L >= 0));
   const keys = layout.sort;   // ordered sort keys; earlier keys win, later ones break ties
@@ -794,7 +811,12 @@ function buildGrid() {
   };
   return {
     vis, rowLv, colLv, rowItems, colItems, text,
-    cell: (r, c) => value(r.fx, r.t, c),
+    cell: (r, c) => {
+      const v = value(r.fx, r.t, c);
+      const mi = rMeasAt >= 0 ? r.t[rMeasAt] : cMeasAt >= 0 ? c.t[cMeasAt] : -1;
+      const custom = vis[mi] && vis[mi].custom;
+      return custom && typeof v.s === "number" && isFinite(v.s) ? { f: custom(v.s), s: v.s } : v;
+    },
     subHidden: !!flatCmp && rowSub.size > 0
   };
 }
@@ -989,6 +1011,7 @@ function setNotice(text, isError) {
 function setModel(m) {
   const prev = model;
   model = m;
+  applyFieldFormats(m);
   layout = reconcile(layout, prev);
   render();
 }
@@ -1249,6 +1272,61 @@ const FORMAT_FORM = [
   ["Lines", [["lineColor", "Grid lines", "color"], ["dividerColor", "Group dividers", "color"]]]
 ];
 const HEX = /^#[0-9a-f]{6}$/i;
+const NUMBER_DEFAULT = { type: "number", decimals: 0, units: "", prefix: "", suffix: "", thousands: true, negative: "minus" };
+function cleanNumberFormat(c) {
+  const txt = s => typeof s === "string" ? s.replace(/[^\p{L}\p{N}\p{Sc} %.,()\/-]/gu, "").slice(0, 12) : "";
+  const n = Math.round(Number(c.decimals));
+  return {
+    type: c.type === "percent" ? "percent" : "number",
+    decimals: isFinite(n) ? Math.min(10, Math.max(0, n)) : 0,
+    units: ["", "K", "M", "B"].includes(c.units) ? c.units : "",
+    prefix: txt(c.prefix), suffix: txt(c.suffix),
+    thousands: c.thousands !== false,
+    negative: c.negative === "paren" ? "paren" : "minus"
+  };
+}
+const locale = () => {
+  const l = typeof tableau !== "undefined" && tableau.extensions && tableau.extensions.environment && tableau.extensions.environment.locale;
+  try { return l ? Intl.getCanonicalLocales(String(l).replace("_", "-"))[0] : undefined; } catch (e) { return undefined; }
+};
+// A measure's custom number format, as a formatter with its Excel number format in .xl.
+function makeNumberFormat(c) {
+  const pct = c.type === "percent";
+  const div = pct ? 0.01 : ({ K: 1e3, M: 1e6, B: 1e9 }[c.units] || 1);
+  const unit = pct ? "%" : c.units;
+  const nf = new Intl.NumberFormat(locale(), { minimumFractionDigits: c.decimals, maximumFractionDigits: c.decimals, useGrouping: c.thousands });
+  const fn = v => {
+    const body = nf.format(Math.abs(v) / div);
+    const txt = c.prefix + body + unit + c.suffix;
+    if (v >= 0 || body === nf.format(0)) return txt;
+    return c.negative === "paren" ? "(" + txt + ")" : "-" + txt;
+  };
+  const lit = s => s ? '"' + s.replace(/"/g, "") + '"' : "";
+  const num = (c.thousands ? "#,##0" : "0") + (c.decimals ? "." + "0".repeat(c.decimals) : "") +
+    (pct ? "%" : ",".repeat({ K: 1, M: 2, B: 3 }[c.units] || 0));
+  const pos = lit(c.prefix) + num + (pct ? "" : lit(c.units)) + lit(c.suffix);
+  fn.xl = pos + ";" + (c.negative === "paren" ? "(" + pos + ")" : "-" + pos);
+  return fn;
+}
+// Tableau sends dates as UTC, so they're formatted in UTC.
+function formatDate(ms, pattern) {
+  const d = new Date(ms), M = d.getUTCMonth(), p2 = n => String(n).padStart(2, "0");
+  const month = style => new Intl.DateTimeFormat(locale(), { month: style, timeZone: "UTC" }).format(d);
+  return pattern.replace(/yyyy|MMMM|MMM|MM|dd|d|HH|mm|q/g, t => ({
+    yyyy: d.getUTCFullYear(), MMMM: month("long"), MMM: month("short"), MM: p2(M + 1), dd: p2(d.getUTCDate()),
+    d: d.getUTCDate(), HH: p2(d.getUTCHours()), mm: p2(d.getUTCMinutes()), q: Math.floor(M / 3) + 1
+  })[t]);
+}
+function applyFieldFormats(m) {
+  for (const meas of m.measures) {
+    const c = format.measureFormats[meas.id];
+    meas.custom = c ? makeNumberFormat(c) : null;
+  }
+  for (const d of m.dims) {
+    const p = d.isDate && format.dateFormats[d.id];
+    d.labels = p ? d.times.map((t, i) => t == null ? d.members[i] : formatDate(t, p)) : null;
+  }
+}
 // Settings come from the workbook: keep only known keys with values of the right shape.
 function cleanFormat(f) {
   const out = { ...DEFAULT_FORMAT };
@@ -1258,6 +1336,18 @@ function cleanFormat(f) {
       out.paramMap = {};
       if (v && typeof v === "object") for (const [fid, name] of Object.entries(v)) {
         if (typeof name === "string" && name && fid.length <= 300) out.paramMap[fid] = name.slice(0, 300);
+      }
+    }
+    else if (key === "measureFormats") {
+      out.measureFormats = {};
+      if (v && typeof v === "object") for (const [id, c] of Object.entries(v)) {
+        if (c && typeof c === "object" && id.length <= 300) out.measureFormats[id] = cleanNumberFormat(c);
+      }
+    }
+    else if (key === "dateFormats") {
+      out.dateFormats = {};
+      if (v && typeof v === "object") for (const [id, p] of Object.entries(v)) {
+        if (Object.hasOwn(DATE_FORMATS, p) && id.length <= 300) out.dateFormats[id] = p;
       }
     }
     else if (typeof def === "boolean") { if (typeof v === "boolean") out[key] = v; }
@@ -1297,10 +1387,51 @@ function applyFormat(f) {
   measureSticky();
 }
 function setFormat(f) {
-  const mapChanged = JSON.stringify(f.paramMap) !== JSON.stringify(format.paramMap);
+  const changed = k => JSON.stringify(f[k]) !== JSON.stringify(format[k]);
+  const mapChanged = changed("paramMap"), fieldsChanged = changed("measureFormats") || changed("dateFormats");
   format = f;
   applyFormat(f);
-  if (mapChanged && model) { applyParams(model); render(); }
+  if (!model || !(mapChanged || fieldsChanged)) return;
+  if (mapChanged) applyParams(model);
+  applyFieldFormats(model);
+  render();
+}
+
+let fpMeasure = null;   // measure being edited in the Number formats section
+function previewText(m) {
+  const f = m.custom || m.fmt, v = m.sample ?? 1234567.891;
+  return `Example: ${f(Math.abs(v))}  /  ${f(-Math.abs(v))}` + (m.custom ? "" : "  (Tableau's format)");
+}
+function measureSectionHtml() {
+  const head = `<h4>Number formats</h4>`;
+  if (!model || !model.measures.length) return head + `<div class="fp-hint" style="padding-left:12px">No measures on this sheet.</div>`;
+  if (!model.measById.has(fpMeasure)) fpMeasure = model.measures[0].id;
+  const m = model.measById.get(fpMeasure), saved = format.measureFormats[fpMeasure];
+  const c = { ...NUMBER_DEFAULT, ...saved }, off = saved ? "" : " disabled";
+  const opt = (v, t, cur) => `<option value="${esc(v)}"${v === cur ? " selected" : ""}>${esc(t)}</option>`;
+  const row = (label, input) => `<label class="fp-field"><span>${label}</span>${input}</label>`;
+  return head +
+    row("Measure", `<select data-mf-pick>${model.measures.map(x =>
+      opt(x.id, x.label + (format.measureFormats[x.id] ? "  \u2022 custom" : ""), fpMeasure)).join("")}</select>`) +
+    row("Format", `<select data-mf="type">${opt("auto", "Automatic (Tableau)", saved ? c.type : "auto")}` +
+      `${opt("number", "Number", saved ? c.type : "")}${opt("percent", "Percentage", saved ? c.type : "")}</select>`) +
+    row("Decimal places", `<input type="number" min="0" max="10" data-mf="decimals" value="${c.decimals}"${off}>`) +
+    row("Display units", `<select data-mf="units"${off || (c.type === "percent" ? " disabled" : "")}>` +
+      [["", "None"], ["K", "Thousands (K)"], ["M", "Millions (M)"], ["B", "Billions (B)"]].map(([v, t]) => opt(v, t, c.units)).join("") + `</select>`) +
+    row("Prefix", `<input type="text" data-mf="prefix" maxlength="12" placeholder="e.g. €" value="${esc(c.prefix)}"${off}>`) +
+    row("Suffix", `<input type="text" data-mf="suffix" maxlength="12" value="${esc(c.suffix)}"${off}>`) +
+    row("Thousands separator", `<input type="checkbox" data-mf="thousands"${c.thousands ? " checked" : ""}${off}>`) +
+    row("Negative values", `<select data-mf="negative"${off}>${opt("minus", "-1234", c.negative)}${opt("paren", "(1234)", c.negative)}</select>`) +
+    `<div class="fp-hint" id="fpPreview">${esc(previewText(m))}</div>`;
+}
+function dateSectionHtml() {
+  const dates = model ? model.dims.filter(d => d.isDate) : [];
+  return `<h4>Date formats</h4>` + (dates.map(d => {
+    const cur = format.dateFormats[d.id] || "", ex = d.times.find(t => t != null);
+    return `<label class="fp-field"><span>${esc(d.label)}</span><select data-df="${esc(d.id)}"><option value="">Automatic (Tableau)</option>` +
+      Object.keys(DATE_FORMATS).map(p => `<option value="${p}"${p === cur ? " selected" : ""}>${esc(ex != null ? formatDate(ex, p) : DATE_FORMATS[p])}</option>`).join("") +
+      `</select></label>`;
+  }).join("") || `<div class="fp-hint" style="padding-left:12px">No date fields. Date parts like YEAR() and dates returned as text keep their own format.</div>`);
 }
 
 let savedFormat = null;
@@ -1308,7 +1439,12 @@ const canFormat = () => LOCAL || (typeof tableau !== "undefined" && tableau.exte
   tableau.extensions.environment.mode === "authoring");
 function openFormat() {
   if (!canFormat()) return;
-  savedFormat = { ...format };
+  savedFormat = structuredClone(format);
+  renderFormatPanel();
+  $("formatPanel").hidden = false;
+  $("fpBody").querySelector("input, select").focus();
+}
+function renderFormatPanel() {
   const field = ([key, label, kind], section) => {
     const v = format[key], id = "fp-" + key;
     let input;
@@ -1341,10 +1477,9 @@ function openFormat() {
       opt([NO_PARAM, "Don't rename"]) + `</select></label>`;
   }).join("") || `<div class="fp-hint" style="padding-left:12px">No Grid Level or Metric Selector fields on this sheet.</div>`);
   $("fpBody").innerHTML = FORMAT_FORM.map(([title, fields]) => `<h4>${title}</h4>` + fields.map(f => field(f, title)).join("")).join("") +
+    `<div id="fpMeasures">${measureSectionHtml()}</div>` + dateSectionHtml() +
     paramSection +
     `<datalist id="fpFonts">${FONTS.map(f => `<option value="${f}">`).join("")}</datalist>`;
-  $("formatPanel").hidden = false;
-  $("fpBody").querySelector("input, select").focus();
 }
 async function closeFormat(save) {
   if (!save) setFormat(savedFormat || format);
@@ -1362,6 +1497,22 @@ async function closeFormat(save) {
 }
 $("fpBody").addEventListener("input", e => {
   const el = e.target, key = el.dataset.k;
+  if (el.matches("[data-mf-pick]")) { fpMeasure = el.value; $("fpMeasures").innerHTML = measureSectionHtml(); return; }
+  if (el.dataset.mf) {
+    const mf = { ...format.measureFormats }, k = el.dataset.mf;
+    if (k === "type" && el.value === "auto") delete mf[fpMeasure];
+    else mf[fpMeasure] = cleanNumberFormat({ ...NUMBER_DEFAULT, ...mf[fpMeasure], [k]: el.type === "checkbox" ? el.checked : el.value });
+    setFormat(cleanFormat({ ...format, measureFormats: mf }));
+    if (k === "type") $("fpMeasures").innerHTML = measureSectionHtml();
+    else $("fpPreview").textContent = previewText(model.measById.get(fpMeasure));
+    return;
+  }
+  if (el.dataset.df != null) {
+    const df = { ...format.dateFormats };
+    if (el.value) df[el.dataset.df] = el.value; else delete df[el.dataset.df];
+    setFormat(cleanFormat({ ...format, dateFormats: df }));
+    return;
+  }
   if (el.dataset.pm != null) {
     const map = { ...format.paramMap };
     if (el.value) map[el.dataset.pm] = el.value; else delete map[el.dataset.pm];
@@ -1376,7 +1527,7 @@ $("formatPanel").addEventListener("click", e => {
   if (!b) return;
   if (b.dataset.fp === "save") closeFormat(true);
   else if (b.dataset.fp === "cancel") closeFormat(false);
-  else if (b.dataset.fp === "defaults") { setFormat({ ...DEFAULT_FORMAT }); const keep = savedFormat; openFormat(); savedFormat = keep; }
+  else if (b.dataset.fp === "defaults") { setFormat({ ...DEFAULT_FORMAT }); renderFormatPanel(); }
 });
 $("btnFormat").onclick = openFormat;
 
@@ -1434,7 +1585,8 @@ async function exportExcel() {
       for (const c of colItems) {
         const cell = g.cell(it, c);
         const mi = rowLv.includes(MEAS) ? it.t[rowLv.indexOf(MEAS)] : colLv.includes(MEAS) ? c.t[colLv.indexOf(MEAS)] : -1;
-        const fmt = mi >= 0 && g.vis[mi] ? model.measures[g.vis[mi].index].fmt : null;
+        const meas = mi >= 0 && g.vis[mi];
+        const fmt = meas ? meas.custom || meas.fmt : null;
         row.push(typeof cell.s === "number" && isFinite(cell.s) ? { t: "n", v: cell.s, z: (fmt && fmt.xl) || "General" } : cell.f || null);
       }
       aoa.push(row);
@@ -1664,7 +1816,7 @@ function cellOf(c) {
   const nv = c.nativeValue;
   const f = c.formattedValue != null ? String(c.formattedValue) : String(c.value ?? "");
   const s = typeof nv === "number" ? nv : nv instanceof Date ? nv.getTime() : f;
-  return { f, s };
+  return nv instanceof Date ? { f, s, dt: 1 } : { f, s };
 }
 
 async function loadFromTableau() {
