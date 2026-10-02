@@ -192,18 +192,28 @@ Status: `[ ]` open, `[x]` done. Answers to clarification questions are recorded 
 
 **How the batch was built** (all in `index.html`):
 
-- Toolbar (always visible): shelf collapse arrow (`#btnShelves`, toggles `#app.collapsed`), Swap, Reset, Group rows, Totals menu (`#totalsMenu`), Export to Excel.
+- Toolbar (always visible): shelf collapse arrow (`#btnShelves`, toggles `#app.collapsed`), Sort grid menu (`#sortMenu`), Group rows, Totals menu (`#totalsMenu`), Export to Excel, Format (authors).
 - `layout` gained `grouped`, `totals: { sub: [field ids], grandRows, grandCols, atEnd }` and `sort: { type: "dim", id, dir } | { type: "val", sig, dir }`. Subtotals are stored per field id, so they follow a field to the other axis. `sig` identifies a column by its members and measure, independent of level order.
 - `cellAt(fixed, measureIndex)` computes a value at any level of detail (cells, subtotals, grand totals) from the records, cached per set of fixed dims, using the measure's combine rule.
 - `axisItems(levels, vis, opt)` builds the ordered header paths of an axis, including total paths (`t[i] = -1` means "all members", `tot` = totalled level, -1 for grand). Grouped order sorts each level within its parent; ungrouped value or dimension sorts use `flatCmp` over all rows. Subtotal rows can't sit inside groups that a flat sort has split up, so they're hidden with a notice.
 - `buildGrid()` returns everything `render()` and `exportExcel()` need, so the export matches the screen exactly.
-- Excel: SheetJS (`xlsx.full.min.js`, 0.20.3, lazily loaded). Numbers are native values with a number format derived from Tableau's formatting (`inferFormat(...).xl`). Title rows hold the sheet name, export time and `worksheet.getParametersAsync()` values. The file is named `<sheet>_<YYYY-MM-DD>.xlsx`.
+- Excel: SheetJS (`xlsx.full.min.js`, 0.20.3, lazily loaded). Numbers are native values with a number format derived from Tableau's formatting (`inferFormat(...).xl`). Title rows hold the sheet name and export time. The file is named `<sheet>_<YYYY-MM-DD>.xlsx`.
 - Still to confirm inside Tableau: downloads from a viz extension frame (Desktop and Cloud), and the parameter list.
 
 7. [x] **Parameter values as field names.** A field on the grid driven by a parameter (`Grid Level 1` <- `Kp.03 Grid Level 1 (P)`) shows the parameter's current value ("Operator") in headers, shelves, the field list, the Totals menu and the export.
    - Matching: only fields whose name matches `PARAM_FIELDS` (`/grid level|metric selector/i`). The parameter is the one whose name contains the field name as whole words, so `Grid Level 1` doesn't match `Grid Level 10`; the shortest match wins. Works for measures too (`SUM(Kp.06 Metric Selector)`).
    - Labels update on `ParameterChanged` without waiting for the data reload. `?debug=1` lists the field-to-parameter matches under PARAMETER LABELS.
+   - `getParametersAsync()` returns **every parameter in the workbook**, so several reports' `Grid Level 1` match. The Format panel's **parameter prefix** (e.g. `Kp.03`) restricts matches to that report; without it the grid shows a notice naming the ambiguous fields.
 8. [x] **Hide fields set to None.** When the parameter's value is in `PARAM_NONE` ("None", "(None)", "-", empty...), the field is marked `off` and left out of the grid, shelves, field list, totals and export. It keeps its place in `layout`, so it comes back in the same position when the parameter changes. Values stay exact: a None field holds one member, so leaving it out merges nothing.
+9. [x] **Multi-level sort; Swap and Reset removed.** The toolbar's "Sort grid" menu lists sort levels in order ("Sort by", "Then by"...). Each level is a row field, a column field, or the values in a column, with a direction; levels can be added, reordered, removed or cleared.
+   - `layout.sort` is an ordered array of keys `{ type: "dim", id, dir } | { type: "val", sig, dir }`. Earlier keys win; later ones break ties; natural order breaks the final tie.
+   - Grouped rows: each level is sorted within its parent using the keys that apply to it (its own field's key; value keys by the group's subtotal). Ungrouped: all rows compared key by key as one flat list. Column fields' keys order the columns.
+   - Header sort buttons edit the same list: an unsorted field becomes the first key, then reverses, then is removed. With several keys, buttons show the key's position.
+10. [x] **Export without parameter list.** Title rows are only the sheet name and export date/time.
+11. [x] **Format panel (author only).** Toolbar "Format" button and the Marks card's Format Extension button (manifest `<context-menu>` + `initializeAsync({ configure })`). Shown only in authoring mode (`environment.mode === "authoring"`) or local preview.
+   - Settings: font family/size/colour; column header, row label, cell, subtotal and grand total background/text/bold; banding on/off and colour; number alignment; spacing (compact/normal/roomy); grid line and group divider colours; parameter prefix.
+   - Live preview while editing; Cancel/Escape reverts; Save writes JSON to `tableau.extensions.settings` key `format` (saved with the workbook). Values are validated on load (`cleanFormat`: hex colours, clamped size, allowlisted text).
+   - Applied as `--g-*` CSS variables on the document; the grid CSS reads only those. Excel export doesn't carry colours (SheetJS community edition has no cell styles).
 
 ### 8.0.1 To explore later: on-demand fields (no query until used)
 

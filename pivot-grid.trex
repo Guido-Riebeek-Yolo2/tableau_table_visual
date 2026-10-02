@@ -17,6 +17,11 @@
       <permission>full data</permission>
     </permissions>
 
+    <!-- Adds the Format Extension button on the Marks card; must follow icon and permissions. -->
+    <context-menu>
+      <configure-context-menu-item />
+    </context-menu>
+
     <!-- Tiles that appear on the Marks card. The ids must match ENC_AXIS in index.html. -->
     <encoding id="rows">
       <display-name resource-id="enc_rows">Rows</display-name>
