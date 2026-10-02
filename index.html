@@ -239,6 +239,13 @@
   .fp-ex { display: flex; flex-direction: column; gap: 3px; }
   .fp-ex label { display: flex; align-items: center; gap: 5px; cursor: pointer; }
   .fp-hint code { font-size: 10.5px; background: var(--band); padding: 0 2px; border-radius: 2px; }
+  .fp-check { display: flex; align-items: center; gap: 6px; padding: 3px 12px; cursor: pointer; }
+  .fp-io { padding: 2px 12px; }
+  .fp-io textarea {
+    width: 100%; resize: vertical; font: 11px/1.4 Consolas, "Courier New", monospace; color: var(--ink);
+    border: 1px solid var(--line-strong); border-radius: 3px; padding: 4px 6px;
+  }
+  label.tool { cursor: pointer; }
   .fp-field { display: grid; grid-template-columns: 110px 1fr; gap: 8px; align-items: center; padding: 3px 12px; }
   .fp-field input[type=color] { width: 44px; height: 23px; padding: 1px; border: 1px solid var(--line-strong); border-radius: 3px; background: var(--bg); cursor: pointer; }
   .fp-field input[type=checkbox] { justify-self: start; }
@@ -1337,8 +1344,69 @@ const FORMAT_SECTIONS = [
   { id: "totalsCalc", title: "Total calculations", body: () => `<div id="fpTotals">${totalSectionHtml()}</div>`,
     desc: f => { const n = Object.keys(f.totalRules).length; return n ? `${n} custom` : "automatic"; } },
   { id: "params", title: "Parameter names", body: () => paramSectionHtml(),
-    desc: f => { const n = Object.keys(f.paramMap).length; return n ? `${n} chosen` : "automatic"; } }
+    desc: f => { const n = Object.keys(f.paramMap).length; return n ? `${n} chosen` : "automatic"; } },
+  { id: "io", title: "Import / export", body: () => ioSectionHtml(), desc: () => "reuse on other sheets" }
 ];
+
+/* ---------- import / export of format settings ---------- */
+const NON_STYLE = ["paramMap", "measureFormats", "dateFormats", "totalRules"];
+const IO_PARTS = [
+  ["style", "Fonts, colours and text styles", true],
+  ["numbers", "Number and date formats", true],
+  ["totals", "Total calculations", true],
+  ["params", "Parameter names (sheet specific)", false]
+];
+function ioSectionHtml() {
+  return IO_PARTS.map(([id, label, on]) =>
+      `<label class="fp-check"><input type="checkbox" data-io-part="${id}"${on ? " checked" : ""}> ${label}</label>`).join("") +
+    `<div class="menu-foot"><button class="tool" data-io="copy">Copy settings</button><button class="tool" data-io="download">Download file</button></div>` +
+    `<div class="fp-sub">Import</div>` +
+    `<div class="fp-io"><textarea id="fpIoText" rows="4" spellcheck="false" placeholder="Paste copied settings here" aria-label="Settings to import"></textarea></div>` +
+    `<div class="menu-foot"><button class="tool" data-io="import">Import pasted</button>` +
+    `<label class="tool">Load file…<input type="file" id="fpIoFile" accept=".json,application/json" hidden></label></div>` +
+    `<div class="fp-hint" id="fpIoStatus" role="status">Only the ticked parts are exported or imported. Imported settings show straight away; click Save to keep them.</div>`;
+}
+const ioParts = () => new Set([...document.querySelectorAll("#fpBody [data-io-part]:checked")].map(el => el.dataset.ioPart));
+function exportSettings() {
+  const parts = ioParts(), out = { pivotGridFormat: 1 };
+  if (parts.has("style")) out.style = Object.fromEntries(Object.entries(format).filter(([k]) => !NON_STYLE.includes(k)));
+  if (parts.has("numbers")) { out.measureFormats = format.measureFormats; out.dateFormats = format.dateFormats; }
+  if (parts.has("totals")) out.totalRules = format.totalRules;
+  if (parts.has("params")) out.paramMap = format.paramMap;
+  return JSON.stringify(out, null, 2);
+}
+function ioStatus(text, isError) {
+  const el = $("fpIoStatus");
+  if (el) { el.textContent = text; el.style.color = isError ? "#a2403a" : ""; }
+}
+// Merges the ticked parts of exported settings into the current format; cleanFormat validates everything.
+function importSettings(text) {
+  let data;
+  try { data = JSON.parse(text); } catch (e) { return ioStatus("That isn't valid settings text. Copy it again from the other sheet.", true); }
+  if (!data || data.pivotGridFormat !== 1) return ioStatus("These aren't Pivot Grid format settings.", true);
+  const parts = ioParts(), next = structuredClone(format), done = [];
+  if (parts.has("style") && data.style && typeof data.style === "object") {
+    for (const [k, v] of Object.entries(data.style)) if (k in DEFAULT_FORMAT && !NON_STYLE.includes(k)) next[k] = v;
+    done.push("fonts and colours");
+  }
+  if (parts.has("numbers") && (data.measureFormats || data.dateFormats)) {
+    Object.assign(next.measureFormats, data.measureFormats || {});
+    Object.assign(next.dateFormats, data.dateFormats || {});
+    done.push("number and date formats");
+  }
+  if (parts.has("totals") && data.totalRules) { Object.assign(next.totalRules, data.totalRules); done.push("total calculations"); }
+  if (parts.has("params") && data.paramMap) { Object.assign(next.paramMap, data.paramMap); done.push("parameter names"); }
+  if (!done.length) return ioStatus("Nothing to import: the ticked parts aren't in these settings.", true);
+  setFormat(cleanFormat(next, format));
+  fpOpen = "io";
+  renderFormatPanel();
+  // Settings keyed by measure name only apply where this sheet has the same measures.
+  const ids = new Set(model ? model.measures.map(m => m.id) : []);
+  const keyed = [...Object.keys(data.measureFormats || {}), ...Object.keys(data.totalRules || {})];
+  const missing = keyed.filter(id => !ids.has(id)).length;
+  ioStatus(`Imported ${done.join(", ")}.` + (missing ? ` ${missing} measure setting(s) refer to measures not on this sheet and have no effect here.` : "") +
+    " Click Save to keep them.");
+}
 const HEX = /^#[0-9a-f]{6}$/i;
 const NUMBER_DEFAULT = { type: "number", decimals: 0, units: "", prefix: "", suffix: "", thousands: true, negative: "minus" };
 function cleanNumberFormat(c) {
@@ -1412,9 +1480,10 @@ function applyFieldFormats(m) {
     d.labels = p ? d.times.map((t, i) => t == null ? d.members[i] : formatDate(t, p)) : null;
   }
 }
-// Settings come from the workbook: keep only known keys with values of the right shape.
-function cleanFormat(f) {
-  const out = { ...DEFAULT_FORMAT };
+// Settings come from the workbook or an import: keep only known keys with values of the right shape;
+// anything invalid falls back to `base`.
+function cleanFormat(f, base = DEFAULT_FORMAT) {
+  const out = { ...base };
   for (const [key, def] of Object.entries(DEFAULT_FORMAT)) {
     const v = f && f[key];
     if (key === "paramMap") {
@@ -1697,7 +1766,30 @@ $("fpBody").addEventListener("input", e => {
   if (!key) return;
   setFormat(cleanFormat({ ...format, [key]: el.type === "checkbox" ? el.checked : el.value }));
 });
-$("formatPanel").addEventListener("click", e => {
+$("formatPanel").addEventListener("click", async e => {
+  const io = e.target.closest("[data-io]");
+  if (io) {
+    const act = io.dataset.io;
+    if (act === "import") return importSettings($("fpIoText").value);
+    const text = exportSettings();
+    if (act === "download") {
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(new Blob([text], { type: "application/json" }));
+      a.download = `pivot-grid-format_${(worksheet ? worksheet.name : "sheet").replace(/[\\/:*?"<>|]+/g, "_")}.json`;
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+      return ioStatus("Downloaded. On another sheet, use Load file… to import it.");
+    }
+    // The clipboard API can be blocked inside Tableau's frame; fall back to a selected text box.
+    try { await navigator.clipboard.writeText(text); return ioStatus("Copied. On another sheet, paste it into the Import box."); }
+    catch (err) {
+      const ta = $("fpIoText");
+      ta.value = text; ta.focus(); ta.select();
+      let ok = false;
+      try { ok = document.execCommand("copy"); } catch (e2) { ok = false; }
+      return ioStatus(ok ? "Copied. On another sheet, paste it into the Import box." : "Copying is blocked here. The settings are selected in the box above: press Ctrl+C.");
+    }
+  }
   const lod = e.target.closest("[data-tl-add], [data-tl-del]");
   if (lod) {
     const tr = structuredClone(format.totalRules), t = tr[fpTotal];
@@ -1711,6 +1803,12 @@ $("formatPanel").addEventListener("click", e => {
   if (b.dataset.fp === "save") closeFormat(true);
   else if (b.dataset.fp === "cancel") closeFormat(false);
   else if (b.dataset.fp === "defaults") { setFormat({ ...DEFAULT_FORMAT }); renderFormatPanel(); }
+});
+$("fpBody").addEventListener("change", e => {
+  if (e.target.id !== "fpIoFile" || !e.target.files.length) return;
+  const file = e.target.files[0];
+  if (file.size > 500000) return ioStatus("That file is too large to be Pivot Grid settings.", true);
+  file.text().then(importSettings, () => ioStatus("Couldn't read that file.", true));
 });
 $("btnFormat").onclick = openFormat;
 
