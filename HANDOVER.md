@@ -27,6 +27,8 @@ Decisions already made with the user:
 index.html                          The whole extension: HTML, CSS and JS in one file
 pivot-grid.trex                     Viz extension manifest
 tableau.extensions.1.latest.min.js  Extensions API library, version 1.17 (from tableau/extensions-api)
+xlsx.full.min.js                    SheetJS 0.20.3 for Excel export (loaded on first export)
+fonts/                              Noto Sans woff2 files (latin, latin-ext, italic) + OFL.txt licence
 HANDOVER.md                         This file
 ```
 
