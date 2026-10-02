@@ -354,8 +354,9 @@ const DEFAULT_FORMAT = {
   subtotalBg: "#eef4f7", subtotalColor: "#33393f", subtotalBold: true,
   grandBg: "#e2edf2", grandColor: "#33393f", grandBold: true,
   lineColor: "#e4e7ea", dividerColor: "#c4cad0",
-  paramPrefix: ""
+  paramMap: {}   // field id -> parameter name that names it; NO_PARAM = don't rename
 };
+const NO_PARAM = "__none__";
 
 // Seconds before telling the user we're still waiting for Tableau.
 // When opened locally (file:// or localhost) it falls back to demo data instead.
@@ -389,25 +390,27 @@ let loadWarning = "";
 let params = [];       // the sheet's parameters, from worksheet.getParametersAsync()
 let format = { ...DEFAULT_FORMAT };
 
-// The API returns every parameter in the workbook, so several reports' "Grid Level 1" can match;
-// the Format panel's parameter prefix (e.g. "Kp.03") picks the right one.
+// The API returns every parameter in the workbook and doesn't expose formulas, so a field's
+// parameter is found by name. With several candidates the author picks one in the Format panel;
+// otherwise the shortest name wins (a global "Grid Level 1 (P)" beats "Kp.03 Grid Level 1 (P)").
 function paramCandidates(fieldName) {
   const n = norm(stripAgg(fieldName));
   if (!n || !PARAM_FIELDS.test(n)) return [];
   const re = new RegExp("(^|[^a-z0-9])" + n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "($|[^a-z0-9])");
-  return params.filter(p => re.test(norm(p.name)));
+  return params.filter(p => re.test(norm(p.name))).sort((a, b) => a.name.length - b.name.length);
 }
 function paramFor(fieldName) {
-  const prefix = norm(format.paramPrefix);
-  return paramCandidates(fieldName).filter(p => !prefix || norm(p.name).startsWith(prefix))
-    .sort((a, b) => a.name.length - b.name.length)[0] || null;
+  const pick = format.paramMap[fieldName];
+  if (pick === NO_PARAM) return null;
+  const all = paramCandidates(fieldName);
+  return (pick && params.find(p => p.name === pick)) || all[0] || null;
 }
 // Relabels parameter-driven fields and marks those set to "None" as off.
 function applyParams(m) {
   m.ambiguous = [];
   for (const f of [...m.dims, ...m.measures]) {
     const p = paramFor(f.id);
-    if (!format.paramPrefix && paramCandidates(f.id).length > 1) m.ambiguous.push(f.baseLabel);
+    if (!format.paramMap[f.id] && paramCandidates(f.id).length > 1) m.ambiguous.push(f.baseLabel);
     const v = p && p.currentValue ? String(p.currentValue.formattedValue ?? p.currentValue.value ?? "") : null;
     f.param = p ? p.name : null;
     f.off = v != null && PARAM_NONE.includes(norm(v));
@@ -871,7 +874,7 @@ function render() {
       : "",
     g.subHidden ? "Subtotals are hidden while rows are sorted without grouping. Turn on Group rows to see them." : "",
     model.ambiguous && model.ambiguous.length
-      ? `${model.ambiguous.join(", ")} match${model.ambiguous.length > 1 ? "" : "es"} parameters from several reports. Set the parameter prefix (e.g. Kp.03) under Format.` : ""
+      ? `${model.ambiguous.join(", ")} match${model.ambiguous.length > 1 ? "" : "es"} several parameters. Choose the right one under Format › Parameter names.` : ""
   ].filter(Boolean).join(" ");
   setNotice(loadWarning || msg, !!loadWarning);
   if (!$("totalsMenu").hidden) renderTotalsMenu();
@@ -1152,8 +1155,7 @@ const FORMAT_FORM = [
     ["numberAlign", "Numbers", ["left", "center", "right"]], ["density", "Spacing", ["compact", "normal", "roomy"]]]],
   ["Subtotals", [["subtotalBg", "Background", "color"], ["subtotalColor", "Text", "color"], ["subtotalBold", "Bold", "bool"]]],
   ["Grand totals", [["grandBg", "Background", "color"], ["grandColor", "Text", "color"], ["grandBold", "Bold", "bool"]]],
-  ["Lines", [["lineColor", "Grid lines", "color"], ["dividerColor", "Group dividers", "color"]]],
-  ["Parameters", [["paramPrefix", "Prefix", "text"]]]
+  ["Lines", [["lineColor", "Grid lines", "color"], ["dividerColor", "Group dividers", "color"]]]
 ];
 const HEX = /^#[0-9a-f]{6}$/i;
 // Settings come from the workbook: keep only known keys with values of the right shape.
@@ -1161,7 +1163,13 @@ function cleanFormat(f) {
   const out = { ...DEFAULT_FORMAT };
   for (const [key, def] of Object.entries(DEFAULT_FORMAT)) {
     const v = f && f[key];
-    if (typeof def === "boolean") { if (typeof v === "boolean") out[key] = v; }
+    if (key === "paramMap") {
+      out.paramMap = {};
+      if (v && typeof v === "object") for (const [fid, name] of Object.entries(v)) {
+        if (typeof name === "string" && name && fid.length <= 300) out.paramMap[fid] = name.slice(0, 300);
+      }
+    }
+    else if (typeof def === "boolean") { if (typeof v === "boolean") out[key] = v; }
     else if (typeof def === "number") { const n = Number(v); if (isFinite(n)) out[key] = Math.min(32, Math.max(8, Math.round(n))); }
     else if (/Bg$|Color$/.test(key)) { if (HEX.test(v)) out[key] = v; }
     else if (typeof v === "string") out[key] = v.replace(/[^\p{L}\p{N} ._()-]/gu, "").slice(0, 60);
@@ -1188,10 +1196,10 @@ function applyFormat(f) {
   measureSticky();
 }
 function setFormat(f) {
-  const prefixChanged = f.paramPrefix !== format.paramPrefix;
+  const mapChanged = JSON.stringify(f.paramMap) !== JSON.stringify(format.paramMap);
   format = f;
   applyFormat(f);
-  if (prefixChanged && model) { applyParams(model); render(); }
+  if (mapChanged && model) { applyParams(model); render(); }
 }
 
 let savedFormat = null;
@@ -1211,8 +1219,21 @@ function openFormat() {
     else input = `<input type="text" id="${id}" data-k="${key}" value="${esc(v)}" placeholder="e.g. Kp.03">`;
     return `<label class="fp-field" for="${id}"><span>${label}</span>${input}</label>`;
   };
+  // One choice per parameter-driven field on this sheet: which parameter names it.
+  const pFields = model ? [...model.dims, ...model.measures].filter(f => PARAM_FIELDS.test(stripAgg(f.id))) : [];
+  const paramSection = `<h4>Parameter names</h4>` + (pFields.map((f, i) => {
+    const cands = paramCandidates(f.id), pick = format.paramMap[f.id] || "";
+    const auto = cands[0] ? `Automatic (${cands[0].name})` : "Automatic (no match)";
+    const opt = ([v, t]) => `<option value="${esc(v)}"${v === pick ? " selected" : ""}>${esc(t)}</option>`;
+    const others = params.filter(p => !cands.includes(p));
+    return `<label class="fp-field" for="fp-pm${i}"><span>${esc(f.baseLabel)}</span><select id="fp-pm${i}" data-pm="${esc(f.id)}">` +
+      opt(["", auto]) +
+      (cands.length ? `<optgroup label="Matching">${cands.map(p => opt([p.name, p.name])).join("")}</optgroup>` : "") +
+      (others.length ? `<optgroup label="Other parameters">${others.map(p => opt([p.name, p.name])).join("")}</optgroup>` : "") +
+      opt([NO_PARAM, "Don't rename"]) + `</select></label>`;
+  }).join("") || `<div class="fp-hint" style="padding-left:12px">No Grid Level or Metric Selector fields on this sheet.</div>`);
   $("fpBody").innerHTML = FORMAT_FORM.map(([title, fields]) => `<h4>${title}</h4>` + fields.map(field).join("")).join("") +
-    `<div class="fp-hint">Only parameters whose name starts with this are used for Grid Level and Metric Selector names.</div>` +
+    paramSection +
     `<datalist id="fpFonts">${FONTS.map(f => `<option value="${f}">`).join("")}</datalist>`;
   $("formatPanel").hidden = false;
   $("fpBody").querySelector("input, select").focus();
@@ -1233,6 +1254,12 @@ async function closeFormat(save) {
 }
 $("fpBody").addEventListener("input", e => {
   const el = e.target, key = el.dataset.k;
+  if (el.dataset.pm != null) {
+    const map = { ...format.paramMap };
+    if (el.value) map[el.dataset.pm] = el.value; else delete map[el.dataset.pm];
+    setFormat(cleanFormat({ ...format, paramMap: map }));
+    return;
+  }
   if (!key) return;
   setFormat(cleanFormat({ ...format, [key]: el.type === "checkbox" ? el.checked : el.value }));
 });
