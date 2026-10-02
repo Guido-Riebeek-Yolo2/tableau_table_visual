@@ -699,6 +699,12 @@ function combine(g, i, fixed) {
     const den = nums(g, m.ratio[1]).reduce((a, b) => a + b, 0);
     return den ? out(nums(g, m.ratio[0]).reduce((a, b) => a + b, 0) / den) : EMPTY;
   }
+  if (m.rule === "countd") {
+    // Distinct members of the counted field among rows where the measure is non-zero.
+    const seen = new Set();
+    for (const r of g) { const c = r.m[i]; if (typeof c.s === "number" && c.s !== 0) seen.add(r.k[m.countdPos]); }
+    return out(seen.size);
+  }
   if (m.rule === "lod") {
     // Use the LOD measure that excludes exactly the dims being totalled here; its value must be
     // the same on every row of the group, otherwise it isn't this total and the cell stays blank.
@@ -1386,7 +1392,14 @@ function applyFieldFormats(m) {
     meas.ratio = t && t.rule === "ratio" ? [mIdx(t.num), mIdx(t.den)] : null;
     meas.lods = t && t.rule === "lod" ? t.lods.map(l => ({ idx: mIdx(l.m), ex: l.ex.map(id => m.dimPos.get(id)).filter(p => p != null) }))
       .filter(l => l.idx >= 0).map(l => ({ ...l, ex: l.ex.filter(p => m.dims[p].members.length > 1) })) : [];
-    meas.rule = !t ? meas.autoRule
+    // CNTD(X) totals itself when X is in the data; otherwise the author picks the counted field.
+    const cntd = /^(CNTD|COUNTD)\((.*)\)$/i.exec(String(meas.id).trim());
+    const autoDim = cntd ? m.dims.find(d => norm(d.id) === norm(cntd[2])) : null;
+    meas.autoText = autoDim ? `Count distinct of ${autoDim.baseLabel}` : AUTO_RULE_TEXT[meas.autoRule];
+    const countdId = t && t.rule === "countd" ? t.dim : !t && autoDim ? autoDim.id : null;
+    meas.countdPos = countdId != null ? m.dimPos.get(countdId) : undefined;
+    meas.rule = countdId != null ? (meas.countdPos != null ? "countd" : "none")
+      : !t ? meas.autoRule
       : t.rule === "ratio" ? (meas.ratio.every(i => i >= 0) ? "ratio" : "none")
       : t.rule;
   }
@@ -1427,7 +1440,7 @@ function cleanFormat(f) {
       const s = x => typeof x === "string" ? x.slice(0, 300) : "";
       if (v && typeof v === "object") for (const [id, t] of Object.entries(v)) {
         if (!t || typeof t !== "object" || id.length > 300 || !TOTAL_RULES.some(r => r[0] === t.rule)) continue;
-        out.totalRules[id] = { rule: t.rule, num: s(t.num), den: s(t.den),
+        out.totalRules[id] = { rule: t.rule, num: s(t.num), den: s(t.den), dim: s(t.dim),
           lods: (Array.isArray(t.lods) ? t.lods : []).slice(0, 12).filter(l => l && typeof l === "object")
             .map(l => ({ m: s(l.m), ex: (Array.isArray(l.ex) ? l.ex : []).filter(x => typeof x === "string").slice(0, 30).map(s) })) };
       }
@@ -1483,20 +1496,31 @@ function setFormat(f) {
 let fpMeasure = null;   // measure being edited in the Number formats section
 let fpTotal = null;     // measure being edited in the Total calculations section
 const TOTAL_RULES = [["sum", "Sum"], ["min", "Minimum"], ["max", "Maximum"], ["ratio", "Ratio of two measures"],
-  ["lod", "From LOD measures (distinct counts)"], ["none", "Leave blank"]];
+  ["countd", "Count distinct of a field"], ["lod", "From LOD measures"], ["none", "Leave blank"]];
 const AUTO_RULE_TEXT = { sum: "Sum", min: "Minimum", max: "Maximum", none: "blank" };
 function totalSectionHtml() {
   if (!model || !model.measures.length) return `<div class="fp-hint">No measures on this sheet.</div>`;
-  if (!model.measById.has(fpTotal)) fpTotal = (model.measures.find(m => m.autoRule === "none") || model.measures[0]).id;
+  if (!model.measById.has(fpTotal)) fpTotal = (model.measures.find(m => m.rule === "none") || model.measures[0]).id;
   const m = model.measById.get(fpTotal), t = format.totalRules[fpTotal];
   const opt = (v, txt, cur) => `<option value="${esc(v)}"${v === cur ? " selected" : ""}>${esc(txt)}</option>`;
   const row = (label, input) => `<label class="fp-field"><span>${label}</span>${input}</label>`;
   const hint = txt => `<div class="fp-hint">${txt}</div>`;
   const measures = cur => opt("", "Choose…", cur) + model.measures.filter(x => x.id !== fpTotal).map(x => opt(x.id, x.label, cur)).join("");
   let html = row("Measure", `<select data-tr-pick>${model.measures.map(x => opt(x.id, x.label +
-      (format.totalRules[x.id] ? "  \u2022 custom" : x.autoRule === "none" ? "  \u2022 no total" : ""), fpTotal)).join("")}</select>`) +
-    row("Totals use", `<select data-tr="rule">${opt("", `Automatic (${AUTO_RULE_TEXT[m.autoRule]})`, t ? t.rule : "")}` +
+      (format.totalRules[x.id] ? "  \u2022 custom" : x.rule === "none" ? "  \u2022 no total" : ""), fpTotal)).join("")}</select>`) +
+    row("Totals use", `<select data-tr="rule">${opt("", `Automatic (${m.autoText})`, t ? t.rule : "")}` +
       TOTAL_RULES.map(([v, txt]) => opt(v, txt, t ? t.rule : "")).join("") + `</select>`);
+  if (t && t.rule === "countd") {
+    html += row("Counted field", `<select data-tr="dim">${opt("", "Choose…", t.dim)}` +
+      model.dims.map(d => opt(d.id, d.baseLabel === d.label ? d.label : `${d.baseLabel} (${d.label})`, t.dim)).join("") + `</select>`);
+  }
+  if ((t && t.rule === "countd") || (!t && m.rule === "countd")) {
+    html += hint("Every cell and total counts the distinct values of the counted field across the rows it covers, so it's right at any level. " +
+      "The counted field (e.g. Operator) must be on the sheet; put it on the Fields tile if it isn't on the grid. " +
+      "That adds one data row per counted value, so use it for fields with hundreds or thousands of values, not millions (e.g. players).");
+  } else if (!t && m.autoRule === "none" && /^(CNTD|COUNTD)\(/i.test(m.id)) {
+    html += hint(`To total this distinct count, add <b>${esc(stripAgg(m.id))}</b> (the counted field) to the Fields tile.`);
+  }
   if (t && t.rule === "ratio") {
     html += row("Numerator", `<select data-tr="num">${measures(t.num)}</select>`) +
       row("Denominator", `<select data-tr="den">${measures(t.den)}</select>`) +
