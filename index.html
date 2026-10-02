@@ -252,6 +252,14 @@
     box-shadow: 0 8px 18px rgba(25, 45, 65, .28); transform-origin: 20% 50%;
   }
   #marker { position: fixed; display: none; z-index: 999; pointer-events: none; background: var(--drop); border-radius: 2px; }
+  #tip {
+    position: fixed; z-index: 900; display: none; pointer-events: none; max-width: 360px;
+    padding: 7px 10px; background: #fff; color: var(--ink); border: 1px solid var(--line-strong); border-radius: 3px;
+    box-shadow: 0 3px 10px rgba(25, 45, 65, .18); font: 12px/1.45 var(--g-font, var(--font));
+  }
+  #tip .k { color: var(--ink-2); }
+  #tip .v { font-weight: 600; }
+  #tip .m { margin-top: 4px; padding-top: 4px; border-top: 1px solid var(--line); }
   body.dragging, body.dragging * { cursor: grabbing !important; }
   body.dragging.nodrop, body.dragging.nodrop * { cursor: not-allowed !important; }
   .landed { animation: land .7s ease-out; }
@@ -352,6 +360,7 @@
   <div id="diag"><details open><summary>Diagnostics</summary><pre id="diagText">–</pre></details></div>
 </div>
 <div id="marker"></div>
+<div id="tip" role="tooltip"></div>
 
 <script>
 /* ============================================================
@@ -808,6 +817,7 @@ const runLens = (fd, lvl) => {
    RENDER
    ============================================================ */
 function render() {
+  hideTip();
   renderShelves();
   const app = $("app");
   if (!model || !model.dims.length && !model.measures.length) {
@@ -1121,6 +1131,46 @@ $("sortMenu").addEventListener("click", e => {
   }
   commit({ ...structuredClone(layout), sort: list });
 });
+
+/* ---------- value tooltip: the cell's row and column members, then the measure ---------- */
+const tip = $("tip");
+function cellTip(td) {
+  const g = lastGrid, tr = td.parentElement;
+  const it = g && g.rowItems[tr.sectionRowIndex];
+  const ct = it && g.colItems[[...tr.children].filter(el => el.tagName === "TD").indexOf(td)];
+  if (!ct) return "";
+  const line = (k, v) => `<div><span class="k">${esc(k)}:</span> <span class="v">${esc(v)}</span></div>`;
+  const members = (lv, t, tot) => lv.flatMap((id, i) => id === MEAS ? [] :
+    [line(levelName(id), t[i] >= 0 ? g.text(lv, { t, tot }, i) : tot === -1 ? "Grand total" : "Total")]);
+  const rMeas = g.rowLv.indexOf(MEAS), cMeas = g.colLv.indexOf(MEAS);
+  const mi = rMeas >= 0 ? it.t[rMeas] : cMeas >= 0 ? ct.t[cMeas] : -1;
+  const meas = g.vis[mi];
+  if (!meas) return "";
+  const cell = g.cell(it, ct);
+  return members(g.rowLv, it.t, it.tot).join("") + members(g.colLv, ct.t, ct.tot).join("") +
+    `<div class="m">${line(meas.label, cell.f || "No value")}</div>`;
+}
+function placeTip(x, y) {
+  const w = tip.offsetWidth, h = tip.offsetHeight;
+  tip.style.left = Math.max(4, x + 14 + w > innerWidth ? x - w - 10 : x + 14) + "px";
+  tip.style.top = Math.max(4, y + 16 + h > innerHeight ? y - h - 10 : y + 16) + "px";
+}
+let tipFor = null;
+const hideTip = () => { tip.style.display = "none"; tipFor = null; };
+$("grid").addEventListener("mousemove", e => {
+  const td = e.target.closest("td");
+  if (!td || drag) return hideTip();
+  if (tipFor !== td) {
+    const html = cellTip(td);
+    if (!html) return hideTip();
+    tipFor = td;
+    tip.innerHTML = html;
+    tip.style.display = "block";
+  }
+  placeTip(e.clientX, e.clientY);
+});
+$("grid").addEventListener("mouseleave", hideTip);
+$("gridWrap").addEventListener("scroll", hideTip, { passive: true });
 
 /* ---------- totals menu ---------- */
 function renderTotalsMenu() {

@@ -216,6 +216,7 @@ Status: `[ ]` open, `[x]` done. Answers to clarification questions are recorded 
    - Settings: font family (Noto Sans first) / size / colour. Field names, column headers, row labels, cells, subtotals and grand totals each have colour settings plus Bold / Italic / Underline toggles; column headers and row labels have alignment. Also banding on/off and colour, cell alignment, spacing (compact/normal/roomy), grid line and group divider colours, and which parameter names each Grid Level / Metric Selector field.
    - Live preview while editing; Cancel/Escape reverts; Save writes JSON to `tableau.extensions.settings` key `format` (saved with the workbook). Values are validated on load (`cleanFormat`: hex colours, clamped size, allowlisted text).
    - Applied as `--g-*` CSS variables on the document; the grid CSS reads only those. Excel export doesn't carry colours (SheetJS community edition has no cell styles).
+12. [x] **Value tooltips.** Hovering a value cell shows each row field then each column field in grid order (`Field: member`, or Total / Grand total), then `Measure: value`. A custom `#tip` element (instant, styled), positioned at the cursor and kept inside the window; hidden on scroll, drag and re-render. Built from `lastGrid`, so it always matches the cell.
 
 ### 8.0.1 To explore later: on-demand fields (no query until used)
 
