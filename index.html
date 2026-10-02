@@ -54,16 +54,35 @@
   }
   .pill.meas-names.empty { opacity: .5; }
   .pill.lifted { opacity: .3; }
-  .pill:focus-visible, .tool:focus-visible, #showLayout:focus-visible { outline: 2px solid var(--drop); outline-offset: 2px; }
+  .pill:focus-visible, .tool:focus-visible { outline: 2px solid var(--drop); outline-offset: 2px; }
   .ph { color: var(--ink-2); font-style: italic; padding: 0 4px; }
 
-  .tools { flex: none; display: flex; gap: 4px; padding: 5px 8px 0 4px; }
+  /* ---------- toolbar ---------- */
+  #toolbar { flex: none; display: flex; align-items: center; gap: 4px; padding: 4px 8px 4px 4px; border-bottom: 1px solid var(--line); background: var(--head); }
+  #toolbar .spacer { flex: 1; }
+  .tb-title { color: var(--ink-2); padding-right: 6px; }
+  #btnShelves svg { transition: transform .15s; }
+  #app.collapsed #btnShelves svg { transform: rotate(-90deg); }
   .tool {
     height: 21px; padding: 0 8px; border: 1px solid var(--line-strong); border-radius: 3px;
     background: var(--bg); color: var(--ink); font: inherit; cursor: pointer;
     display: inline-flex; align-items: center; gap: 5px;
   }
   .tool:hover { background: var(--band); }
+  .tool[aria-pressed="true"], .tool[aria-expanded="true"] { background: #e8f2f7; border-color: var(--dim); color: var(--dim-d); }
+  .tool:disabled { opacity: .5; cursor: progress; }
+
+  .menu {
+    position: fixed; z-index: 50; min-width: 210px; padding: 4px 0; background: var(--bg);
+    border: 1px solid var(--line-strong); border-radius: 4px; box-shadow: 0 6px 18px rgba(25, 45, 65, .18);
+  }
+  .menu[hidden] { display: none; }
+  .menu h4 { margin: 6px 12px 2px; font-size: 11px; font-weight: 600; color: var(--ink-2); }
+  .menu label { display: flex; align-items: center; gap: 7px; padding: 3px 12px; cursor: pointer; white-space: nowrap; }
+  .menu label:hover { background: var(--band); }
+  .menu label.disabled { opacity: .5; cursor: default; }
+  .menu hr { border: 0; border-top: 1px solid var(--line); margin: 5px 0; }
+  .menu .hint { padding: 2px 12px; color: var(--ink-2); font-style: italic; }
 
   #notice { flex: none; padding: 5px 10px; background: #f2f7fa; color: var(--ink-2); border-bottom: 1px solid var(--line); }
   #notice:empty { display: none; }
@@ -93,7 +112,6 @@
   #pillsAvail { flex-direction: column; flex-wrap: nowrap; align-items: stretch; padding: 5px 8px 10px; }
   #pillsAvail .pill { overflow: hidden; text-overflow: ellipsis; display: block; line-height: 21px; }
   #pillsAvail .ph { white-space: normal; padding: 2px; }
-  #app.collapsed #side { display: none; }
 
   /* ---------- grid ---------- */
   #gridWrap { flex: 1; min-width: 0; overflow: auto; position: relative; }
@@ -116,6 +134,20 @@
   #grid th.over { background: #fdf0e6; }
   #grid th.ch.outer { text-align: left; }
   #grid th.ch .stick { position: sticky; left: calc(var(--lsum, 0px) + 9px); }
+  #grid .tot { font-weight: 600; }
+  #grid tbody tr.tot > td, #grid tbody tr.tot > th.tl, #grid td.tot { background: #eef4f7; }
+  #grid tbody tr.grand > td, #grid tbody tr.grand > th.tl, #grid tbody tr.tot > td.tot { background: #e2edf2; }
+  #grid thead th.tot { background: #eef4f7; }
+
+  .sort {
+    display: inline-flex; align-items: center; justify-content: center; vertical-align: -2px;
+    width: 15px; height: 15px; margin: 0 -4px 0 4px; padding: 0; border: 0; border-radius: 2px;
+    background: transparent; color: var(--ink-2); cursor: pointer; opacity: 0;
+  }
+  #grid th:hover .sort, .sort.on, .sort:focus-visible { opacity: 1; }
+  .sort:hover { background: var(--line); color: var(--ink); }
+  .sort.on { color: var(--drop); }
+  .sort:focus-visible { outline: 2px solid var(--drop); }
 
   .ftag {
     display: inline-block; padding: 1px 8px; margin: -1px -8px; border-radius: 9px;
@@ -131,13 +163,6 @@
   #app.is-empty #empty { display: flex; }
 
   #app.collapsed #shelves { display: none; }
-  #showLayout {
-    display: none; position: fixed; top: 4px; right: 6px; z-index: 20;
-    height: 21px; padding: 0 9px; border: 1px solid var(--line-strong); border-radius: 11px;
-    background: var(--bg); color: var(--ink-2); font: inherit; cursor: pointer; opacity: .75;
-  }
-  #showLayout:hover { opacity: 1; color: var(--ink); }
-  #app.collapsed #showLayout { display: block; }
 
   /* ---------- dragging ---------- */
   .ghost {
@@ -166,6 +191,31 @@
 </head>
 <body>
 <div id="app" class="is-empty">
+  <div id="toolbar" role="toolbar" aria-label="Grid tools">
+    <button class="side-toggle" id="btnShelves" aria-expanded="true" aria-controls="shelves" title="Hide the layout shelves">
+      <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path d="M2.5 4.5 6 8l3.5-3.5" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>
+    </button>
+    <span class="tb-title">Layout</span>
+    <span class="spacer"></span>
+    <button class="tool" id="btnSwap" title="Swap rows and columns">
+      <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path d="M1 4h9M7.5 1.5 10 4 7.5 6.5M11 8H2M4.5 5.5 2 8l2.5 2.5" fill="none" stroke="currentColor" stroke-width="1.3"/></svg>
+      <span>Swap</span>
+    </button>
+    <button class="tool" id="btnReset" title="Return to the layout the author built"><span>Reset</span></button>
+    <button class="tool" id="btnGroup" aria-pressed="true" title="Merge repeated row labels into groups">
+      <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path d="M1.5 2h3v8h-3M7 2h4M7 5h4M7 8h4" fill="none" stroke="currentColor" stroke-width="1.3"/></svg>
+      <span>Group rows</span>
+    </button>
+    <button class="tool" id="btnTotals" aria-haspopup="true" aria-expanded="false" aria-controls="totalsMenu" title="Show subtotals and grand totals">
+      <span>Totals</span>
+      <svg width="9" height="9" viewBox="0 0 12 12" aria-hidden="true"><path d="M2.5 4.5 6 8l3.5-3.5" fill="none" stroke="currentColor" stroke-width="1.6"/></svg>
+    </button>
+    <button class="tool" id="btnExport" title="Download the grid as shown as an Excel file">
+      <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path d="M6 1.5v6.5M3.3 5.5 6 8.2l2.7-2.7M1.5 10.5h9" fill="none" stroke="currentColor" stroke-width="1.3"/></svg>
+      <span>Export to Excel</span>
+    </button>
+  </div>
+  <div class="menu" id="totalsMenu" hidden></div>
   <section id="shelves" aria-label="Grid layout">
     <div class="shelf" data-zone="cols">
       <span class="shelf-label">
@@ -173,14 +223,6 @@
         Columns
       </span>
       <div class="pills" id="pillsCols"></div>
-      <div class="tools">
-        <button class="tool" id="btnSwap" title="Swap rows and columns">
-          <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path d="M1 4h9M7.5 1.5 10 4 7.5 6.5M11 8H2M4.5 5.5 2 8l2.5 2.5" fill="none" stroke="currentColor" stroke-width="1.3"/></svg>
-          <span>Swap</span>
-        </button>
-        <button class="tool" id="btnReset" title="Return to the layout the author built"><span>Reset</span></button>
-        <button class="tool" id="btnHide" title="Hide the layout shelves"><span>Hide</span></button>
-      </div>
     </div>
     <div class="shelf" data-zone="rows">
       <span class="shelf-label">
@@ -197,7 +239,6 @@
       <div class="pills" id="pillsValues"></div>
     </div>
   </section>
-  <button id="showLayout">Show layout</button>
   <div id="notice"></div>
   <div id="main">
     <aside id="side" aria-label="Field list" hidden>
@@ -261,7 +302,7 @@ const natural = new Intl.Collator(undefined, { numeric: true, sensitivity: "base
 const cmpKey = (a, b) => (typeof a === "number" && typeof b === "number") ? a - b : natural.compare(String(a), String(b));
 
 let model = null;      // the sheet's data, independent of layout
-let layout = null;     // { rows:[ids], cols:[ids], measures:[ids], hidden:[ids], removed:[ids] }
+let layout = null;     // { rows, cols, measures, hidden, removed, grouped, totals: { sub, grandRows, grandCols, atEnd }, sort }
 let worksheet = null;
 let diagLines = [];
 let loadWarning = "";
@@ -272,6 +313,7 @@ const ruleOf = id => { const m = AGG_RE.exec(String(id).trim()); return (m && CO
 // its own formatted cells: prefix/suffix, separators, decimals, %, K/M/B units.
 function inferFormat(cells) {
   const plain = v => String(Math.round(v * 1e6) / 1e6);
+  plain.xl = "General";
   const nums = cells.filter(c => c && typeof c.s === "number" && isFinite(c.s) && c.s !== 0 && /\d/.test(c.f));
   if (!nums.length) return plain;
   const split = c => /^(.*?)(\d(?:[\d.,'\s\u00a0\u202f]*\d)?)(\D*)$/.exec(c.f);
@@ -299,12 +341,20 @@ function inferFormat(cells) {
       if (Math.abs(val - Math.abs(ex.s) * scale) > 0.5 * 10 ** -fp.length + 1e-9 * val) continue;
       const d = fp.length, dp = dec || (last === "." ? "," : ".");
       const group = ip.replace(/\d/g, "")[0] || (val >= 1000 ? "" : dp === "," ? "." : ",");
-      return v => {
+      const fn = v => {
         const r = (Math.abs(v) * scale).toFixed(d);
         const [i, f] = r.split(".");
         const n = (group ? i.replace(/\B(?=(\d{3})+(?!\d))/g, group) : i) + (f ? dp + f : "");
         return v < 0 && /[1-9]/.test(r) ? negPre + n + negSuf : posPre + n + posSuf;
       };
+      // Same format as an Excel number format string (Excel always uses "," and "." in the code).
+      const lit = s => s ? '"' + s.replace(/"/g, "") + '"' : "";
+      let body = (group ? "#,##0" : "0") + (d ? "." + "0".repeat(d) : ""), suf = posSuf;
+      if (scale === 100) { body += "%"; suf = suf.replace("%", ""); }
+      else if (scale < 1) body += ",".repeat(Math.round(-Math.log10(scale) / 3));
+      const pos = lit(posPre) + body + lit(suf);
+      fn.xl = pos + ";" + (negPre.includes("(") ? "(" + pos + ")" : "-" + pos);
+      return fn;
     }
   }
   return plain;
@@ -350,7 +400,12 @@ function defaultLayout() {
     const at = DEFAULT_MEASURES_AT < 0 ? list.length : Math.min(DEFAULT_MEASURES_AT, list.length);
     list.splice(at, 0, MEAS);
   }
-  return { rows, cols, measures: model.measures.filter(m => m.axis !== "fields").map(m => m.id), hidden: [], removed: [] };
+  return {
+    rows, cols, measures: model.measures.filter(m => m.axis !== "fields").map(m => m.id), hidden: [], removed: [],
+    grouped: true,
+    totals: { sub: [], grandRows: false, grandCols: false, atEnd: false },  // sub: field ids with subtotals, on whichever axis
+    sort: null   // { type: "dim", id, dir } | { type: "val", sig: column signature, dir }
+  };
 }
 
 // Keeps the user's arrangement when the data refreshes; fields the author
@@ -373,7 +428,9 @@ function reconcile(old, prev) {
   def.cols.forEach(id => { if (!placed.has(id)) cols.push(id); });
   def.measures.forEach(id => { if (!placed.has(id)) measures.push(id); });
   const hidden = old.hidden.filter(id => measures.includes(id));
-  return { rows, cols, measures, hidden, removed };
+  const totals = { ...def.totals, ...old.totals, sub: old.totals.sub.filter(id => id === MEAS || dimIds.has(id)) };
+  const sort = old.sort && (old.sort.type !== "dim" || dimIds.has(old.sort.id)) ? old.sort : null;
+  return { rows, cols, measures, hidden, removed, grouped: old.grouped, totals, sort };
 }
 
 const visibleMeasures = () => layout.measures.filter(id => !layout.hidden.includes(id)).map(id => model.measById.get(id));
@@ -406,30 +463,159 @@ function axisTuples(levels, vis) {
   return out;
 }
 
-// Cell values at the grain of the fields on the grid. A cell that covers one
-// row of data shows Tableau's value as is; several rows are combined.
+// Values at any level of detail. `fixed` = [[dimPos, member], ...] sorted by dimPos;
+// dims not listed are aggregated over, which is how totals are computed.
+// A value covering one row of data is Tableau's own cell; several rows are combined.
 const EMPTY = { f: "", s: null };
-function gridView(rowLv, colLv) {
-  const ids = [...rowLv, ...colLv].filter(id => id !== MEAS);
-  const pos = ids.map(id => model.dimPos.get(id));
-  const groups = new Map();
-  for (const r of model.records) {
-    const key = pos.map(p => r.k[p]).join(",");
-    const g = groups.get(key);
-    if (g) g.push(r); else groups.set(key, [r]);
+let views = new Map(), blanked = new Set();
+function cellAt(fixed, mIdx) {
+  const mask = fixed.map(f => f[0]).join(",");
+  let v = views.get(mask);
+  if (!v) {
+    const pos = fixed.map(f => f[0]);
+    const groups = new Map();
+    for (const r of model.records) {
+      const key = pos.map(p => r.k[p]).join(",");
+      const g = groups.get(key);
+      if (g) g.push(r); else groups.set(key, [r]);
+    }
+    v = new Map();
+    for (const [key, g] of groups) v.set(key, g.length === 1 ? { cells: g[0].m } : { recs: g, cells: [] });
+    views.set(mask, v);
   }
-  const lookup = new Map(), blanked = new Set();
-  for (const [key, g] of groups) lookup.set(key, g.length === 1 ? g[0].m : combine(g, blanked));
-  return { ids, lookup, blanked };
+  const e = v.get(fixed.map(f => f[1]).join(","));
+  if (!e) return EMPTY;
+  if (e.recs && !e.cells[mIdx]) e.cells[mIdx] = combine(e.recs, mIdx);
+  return e.cells[mIdx];
 }
-function combine(g, blanked) {
-  return model.measures.map((m, i) => {
-    if (m.rule === "none") { blanked.add(m.id); return EMPTY; }
-    const vals = g.map(r => r.m[i].s).filter(v => typeof v === "number" && isFinite(v));
-    if (!vals.length) return EMPTY;
-    const v = vals.reduce(m.rule === "sum" ? (a, b) => a + b : m.rule === "min" ? (a, b) => Math.min(a, b) : (a, b) => Math.max(a, b));
-    return { f: m.fmt(v), s: v };
+function combine(g, i) {
+  const m = model.measures[i];
+  if (m.rule === "none") { blanked.add(m.id); return EMPTY; }
+  const vals = g.map(r => r.m[i].s).filter(v => typeof v === "number" && isFinite(v));
+  if (!vals.length) return EMPTY;
+  const v = vals.reduce(m.rule === "sum" ? (a, b) => a + b : m.rule === "min" ? (a, b) => Math.min(a, b) : (a, b) => Math.max(a, b));
+  return { f: m.fmt(v), s: v };
+}
+
+const nullsLast = (a, b, dir) => a == null ? (b == null ? 0 : 1) : b == null ? -1 : dir === "asc" ? cmpKey(a, b) : cmpKey(b, a);
+const numOrNull = c => typeof c.s === "number" && isFinite(c.s) ? c.s : null;
+
+/* One item per header path on an axis, in display order, totals included.
+   t:   member index per level; -1 = all members (a total); the Measure Names level holds a visible-measure index.
+   tot: null for data paths, else the level being totalled (-1 = grand total).
+   opt: { sub: Set of levels with subtotals, grand, atEnd, order(L, prefix, members), flatCmp } */
+function axisItems(levels, vis, opt) {
+  const tuples = axisTuples(levels, vis);
+  const measAt = levels.indexOf(MEAS);
+  const dimAfter = L => levels.slice(L + 1).some(id => id !== MEAS);
+  const totalsFor = (L, prefix) => {
+    if (!dimAfter(L)) return [];
+    const ms = measAt > L ? vis.map((_, i) => i) : [null];
+    return ms.map(m => ({ t: levels.map((id, i) => i <= L ? prefix[i] : id === MEAS ? m : -1), tot: L }));
+  };
+  let items;
+  if (opt.flatCmp) {
+    items = tuples.slice().sort(opt.flatCmp).map(t => ({ t, tot: null }));
+  } else {
+    const walk = (list, L, prefix) => {
+      if (L === levels.length) return [{ t: prefix, tot: null }];
+      const groups = new Map();
+      for (const t of list) { const g = groups.get(t[L]); if (g) g.push(t); else groups.set(t[L], [t]); }
+      const out = [];
+      for (const m of opt.order(L, prefix, [...groups.keys()])) {
+        const p = [...prefix, m];
+        const inner = walk(groups.get(m), L + 1, p);
+        const tots = opt.sub.has(L) ? totalsFor(L, p) : [];
+        out.push(...(opt.atEnd ? inner.concat(tots) : tots.concat(inner)));
+      }
+      return out;
+    };
+    items = levels.length ? walk(tuples, 0, []) : [{ t: [], tot: null }];
+  }
+  if (opt.grand && levels.length) {
+    const g = totalsFor(-1, []);
+    items = opt.atEnd ? items.concat(g) : g.concat(items);
+  }
+  return items;
+}
+
+/* Everything the screen and the export need, from the current layout. */
+function buildGrid() {
+  views = new Map(); blanked = new Set();
+  const vis = visibleMeasures();
+  const rowLv = activeLevels(layout.rows, vis), colLv = activeLevels(layout.cols, vis);
+  const rMeasAt = rowLv.indexOf(MEAS), cMeasAt = colLv.indexOf(MEAS);
+  const label = (id, idx) => id === MEAS ? vis[idx].label : model.dims[model.dimPos.get(id)].members[idx];
+  const fixedOf = (lv, t) => lv.flatMap((id, i) => id !== MEAS && t[i] >= 0 ? [[model.dimPos.get(id), t[i]]] : []);
+  const subOf = lv => new Set(lv.map((id, L) => layout.totals.sub.includes(id) ? L : -1).filter(L => L >= 0));
+  const s = layout.sort;
+  const dimOrder = lv => (L, prefix, members) =>
+    s && s.type === "dim" && s.id === lv[L] && s.dir === "desc" ? members.slice().reverse() : members;
+
+  const colItems = axisItems(colLv, vis, {
+    sub: subOf(colLv), grand: layout.totals.grandCols, atEnd: layout.totals.atEnd, order: dimOrder(colLv)
   });
+  colItems.forEach(c => { c.fx = fixedOf(colLv, c.t); });
+  const colSig = c => colLv.map((id, i) => id + "=" + (c.t[i] < 0 ? "*" : id === MEAS ? vis[c.t[i]].id : label(id, c.t[i])))
+    .sort().join("|") + "|" + (c.tot == null ? "" : c.tot < 0 ? "grand" : colLv[c.tot]);
+  colItems.forEach(c => { c.sig = colSig(c); });
+  const sortCol = s && s.type === "val" ? colItems.find(c => c.sig === s.sig) : null;
+
+  const value = (rFixed, rt, c) => {
+    const mi = rMeasAt >= 0 ? rt[rMeasAt] : cMeasAt >= 0 ? c.t[cMeasAt] : -1;
+    if (mi == null || mi < 0 || !vis[mi]) return EMPTY;
+    return cellAt([...rFixed, ...c.fx].sort((a, b) => a[0] - b[0]), vis[mi].index);
+  };
+
+  // Row order: grouped = sort each level within its parent (groups by subtotal);
+  // ungrouped = one flat list.
+  const rowOrder = (L, prefix, members) => {
+    if (!s) return members;
+    if (s.type === "dim") return dimOrder(rowLv)(L, prefix, members);
+    if (!sortCol || rowLv[L] === MEAS) return members;
+    const mVis = cMeasAt >= 0 ? sortCol.t[cMeasAt] : rMeasAt >= 0 && rMeasAt < L ? prefix[rMeasAt] : 0;
+    const meas = vis[mVis];
+    if (!meas) return members;
+    const dimsInside = rowLv.slice(L + 1).some(id => id !== MEAS);
+    // A group of a measure that can't be added up has no subtotal: keep the groups in order.
+    if (dimsInside && model.measures[meas.index].rule === "none") return members;
+    const t = rowLv.map((id, i) => i < L ? prefix[i] : -1);
+    const val = m => {
+      t[L] = m;
+      const rt = rMeasAt >= 0 ? t.map((v, i) => i === rMeasAt ? mVis : v) : t;
+      return numOrNull(value(fixedOf(rowLv, t), rt, sortCol));
+    };
+    const keyed = members.map(m => [m, val(m)]);
+    return keyed.sort((a, b) => nullsLast(a[1], b[1], s.dir) || a[0] - b[0]).map(e => e[0]);
+  };
+  let flatCmp = null;
+  if (!layout.grouped && s && rowLv.length) {
+    if (s.type === "dim" && rowLv.includes(s.id)) {
+      const L = rowLv.indexOf(s.id);
+      flatCmp = (a, b) => (s.dir === "asc" ? a[L] - b[L] : b[L] - a[L]);
+    } else if (s.type === "val" && sortCol) {
+      const val = t => numOrNull(value(fixedOf(rowLv, t), t, sortCol));
+      const cache = new Map();
+      const v = t => { const k = t.join(","); if (!cache.has(k)) cache.set(k, val(t)); return cache.get(k); };
+      flatCmp = (a, b) => nullsLast(v(a), v(b), s.dir);
+    }
+  }
+  const rowSub = subOf(rowLv);
+  const rowItems = axisItems(rowLv, vis, {
+    sub: rowSub, grand: layout.totals.grandRows, atEnd: layout.totals.atEnd, order: rowOrder, flatCmp
+  });
+  rowItems.forEach(r => { r.fx = fixedOf(rowLv, r.t); });
+
+  // Header text for level i of an item; the first "all members" level of a total carries its label.
+  const text = (lv, it, i) => {
+    if (it.t[i] >= 0) return label(lv[i], it.t[i]);
+    return it.t.findIndex(v => v < 0) === i ? (it.tot === -1 ? "Grand total" : "Total") : "";
+  };
+  return {
+    vis, rowLv, colLv, rowItems, colItems, sortCol, text,
+    cell: (r, c) => value(r.fx, r.t, c),
+    subHidden: !!flatCmp && rowSub.size > 0
+  };
 }
 
 // Level at which each tuple first differs from the one before it.
@@ -462,24 +648,22 @@ function render() {
   }
   app.classList.remove("is-empty");
 
-  const vis = visibleMeasures();
-  const rowLv = activeLevels(layout.rows, vis), colLv = activeLevels(layout.cols, vis);
-  const rowT = axisTuples(rowLv, vis), colT = axisTuples(colLv, vis);
+  const g = buildGrid();
+  const { vis, rowLv, colLv, rowItems, colItems, text } = g;
   const nRH = Math.max(rowLv.length, 1), nCH = Math.max(colLv.length, 1);
-  const rMeasAt = rowLv.indexOf(MEAS), cMeasAt = colLv.indexOf(MEAS);
-  const label = (id, idx) => id === MEAS ? vis[idx].label : model.dims[model.dimPos.get(id)].members[idx];
-  const view = gridView(rowLv, colLv);
-  // For each grid dim: [0 = rows | 1 = cols, level index on that axis]
-  const where = view.ids.map(id => {
-    const i = rowLv.indexOf(id);
-    return i >= 0 ? [0, i] : [1, colLv.indexOf(id)];
-  });
+  const s = layout.sort;
+  const dimSortBtn = id => {
+    if (id === MEAS) return "";
+    const dir = s && s.type === "dim" && s.id === id ? s.dir : "";
+    return sortBtn(`data-sortdim="${esc(id)}"`, dir, dir === "asc" ? "Sort Z to A" : dir === "desc" ? "Clear sort" : "Sort A to Z");
+  };
   const fieldTag = id =>
-    `<span class="ftag" data-drag="${esc(id)}" data-kind="${id === MEAS ? "meas" : "dim"}" title="Drag to move">${esc(levelName(id))}</span>`;
+    `<span class="ftag" data-drag="${esc(id)}" data-kind="${id === MEAS ? "meas" : "dim"}" title="Drag to move">${esc(levelName(id))}</span>${dimSortBtn(id)}`;
   const ph = `<span class="ph">Drop a field here</span>`;
 
-  const cFD = firstDiff(colT), rFD = firstDiff(rowT);
-  const gbCol = colT.map((_, c) => c > 0 && cFD[c] < nCH - 1);
+  const cFD = firstDiff(colItems.map(c => c.t)), rFD = firstDiff(rowItems.map(r => r.t));
+  const gbCol = colItems.map((_, c) => c > 0 && cFD[c] < nCH - 1);
+  const canSort = rowItems.length > 1 && vis.length > 0;
 
   // ---- column headers: one row per column level, then the row-label row
   let h = "<thead>";
@@ -488,12 +672,19 @@ function render() {
     h += `<tr class="hr">` +
       `<th class="corner clabel last" colspan="${nRH}" style="top:var(--t${L},0);left:0" data-id="${id ? esc(id) : ""}">${id ? fieldTag(id) : ph}</th>`;
     const runs = runLens(cFD, L);
-    for (let c = 0; c < colT.length; c++) {
+    for (let c = 0; c < colItems.length; c++) {
       if (!runs[c]) continue;
+      const it = colItems[c];
       // Outer headers that span several columns keep their label in view while scrolling sideways.
       const outer = L < nCH - 1 && runs[c] > 1;
-      const txt = id ? esc(label(id, colT[c][L])) : "";
-      h += `<th class="ch${gbCol[c] ? " gc" : ""}${outer ? " outer" : ""}" colspan="${runs[c]}" style="top:var(--t${L},0)">${outer ? `<span class="stick">${txt}</span>` : txt}</th>`;
+      const txt = id ? esc(text(colLv, it, L)) : "";
+      let btn = "";
+      if (L === nCH - 1 && canSort) {
+        const dir = s && s.type === "val" && g.sortCol === it ? s.dir : "";
+        btn = sortBtn(`data-sig="${esc(it.sig)}"`, dir,
+          dir === "desc" ? "Sort smallest to largest" : dir === "asc" ? "Clear sort" : "Sort rows largest to smallest");
+      }
+      h += `<th class="ch${gbCol[c] ? " gc" : ""}${outer ? " outer" : ""}${it.tot != null ? " tot" : ""}" colspan="${runs[c]}" style="top:var(--t${L},0)">${outer ? `<span class="stick">${txt}</span>` : txt}${btn}</th>`;
     }
     h += "</tr>";
   }
@@ -502,30 +693,27 @@ function render() {
     const id = rowLv[i];
     h += `<th class="corner rlabel${i === nRH - 1 ? " last" : ""}" style="top:var(--t${nCH},0);left:var(--l${i},0)" data-id="${id ? esc(id) : ""}">${id ? fieldTag(id) : ph}</th>`;
   }
-  h += `<th class="lfill" colspan="${colT.length}" style="top:var(--t${nCH},0)"></th></tr></thead>`;
+  h += `<th class="lfill" colspan="${colItems.length}" style="top:var(--t${nCH},0)"></th></tr></thead>`;
 
-  // ---- body
+  // ---- body: grouped rows merge repeated labels; ungrouped rows repeat them
+  const grouped = layout.grouped;
   const rRuns = rowLv.map((_, i) => runLens(rFD, i));
   let b = "<tbody>";
-  for (let r = 0; r < rowT.length; r++) {
-    const rt = rowT[r];
-    b += `<tr class="${r % 2 ? "odd" : ""}${r > 0 && rFD[r] < nRH - 1 ? " gb" : ""}">`;
+  for (let r = 0; r < rowItems.length; r++) {
+    const it = rowItems[r];
+    const cls = [r % 2 ? "odd" : "", grouped && r > 0 && rFD[r] < nRH - 1 ? "gb" : "",
+      it.tot != null ? "tot" : "", it.tot === -1 ? "grand" : ""].filter(Boolean).join(" ");
+    b += `<tr class="${cls}">`;
     if (!rowLv.length) b += `<th class="rh last" style="left:0"></th>`;
     for (let i = 0; i < rowLv.length; i++) {
-      const n = rRuns[i][r];
-      if (n) b += `<th class="rh${i === nRH - 1 ? " last" : ""}" rowspan="${n}" style="left:var(--l${i},0)">${esc(label(rowLv[i], rt[i]))}</th>`;
+      const n = grouped ? rRuns[i][r] : 1;
+      if (!n) continue;
+      b += `<th class="rh${i === nRH - 1 ? " last" : ""}${it.t[i] < 0 ? " tl" : ""}"${n > 1 ? ` rowspan="${n}"` : ""} style="left:var(--l${i},0)">${esc(text(rowLv, it, i))}</th>`;
     }
-    for (let c = 0; c < colT.length; c++) {
-      const ct = colT[c];
-      const mi = rMeasAt >= 0 ? rt[rMeasAt] : cMeasAt >= 0 ? ct[cMeasAt] : -1;
-      let txt = "";
-      if (mi >= 0) {
-        let key = "";
-        for (let d = 0; d < where.length; d++) key += (d ? "," : "") + (where[d][0] === 0 ? rt : ct)[where[d][1]];
-        const cells = view.lookup.get(key);
-        if (cells) txt = cells[vis[mi].index].f;
-      }
-      b += `<td${gbCol[c] ? ' class="gc"' : ""}>${esc(txt)}</td>`;
+    for (let c = 0; c < colItems.length; c++) {
+      const ct = colItems[c];
+      const cls2 = (gbCol[c] ? "gc " : "") + (ct.tot != null ? "tot" : "");
+      b += `<td${cls2 ? ` class="${cls2.trim()}"` : ""}>${esc(g.cell(it, ct).f)}</td>`;
     }
     b += "</tr>";
   }
@@ -535,15 +723,27 @@ function render() {
   grid.innerHTML = h + b;
   measureSticky();
 
-  const blank = vis.filter(m => view.blanked.has(m.id)).map(m => m.label);
-  const msg = !model.measures.length ? ""
-    : !layout.measures.length ? "Drag a measure from the field list onto Values to show numbers."
-    : !vis.length ? "All measures are hidden. Click a measure on the Values shelf to show it."
-    : blank.length ? `${blank.join(", ")} can't be added up, so cells that combine several rows of data are blank. Drag fields from the field list onto the grid to fill them.`
-    : "";
+  const blank = vis.filter(m => blanked.has(m.id)).map(m => m.label);
+  const msg = [
+    !model.measures.length ? ""
+      : !layout.measures.length ? "Drag a measure from the field list onto Values to show numbers."
+      : !vis.length ? "All measures are hidden. Click a measure on the Values shelf to show it."
+      : blank.length ? `${blank.join(", ")} can't be added up, so cells and totals that combine several rows of data are blank.`
+      : "",
+    g.subHidden ? "Subtotals are hidden while rows are sorted without grouping. Turn on Group rows to see them." : ""
+  ].filter(Boolean).join(" ");
   setNotice(loadWarning || msg, !!loadWarning);
+  if (!$("totalsMenu").hidden) renderTotalsMenu();
   diag();
 }
+
+const SORT_ICON = {
+  "":   `<svg width="11" height="11" viewBox="0 0 12 12" aria-hidden="true"><path d="M4 1.5v9M1.8 8.3 4 10.5l2.2-2.2M8 10.5v-9M5.8 3.7 8 1.5l2.2 2.2" fill="none" stroke="currentColor" stroke-width="1.2"/></svg>`,
+  desc: `<svg width="11" height="11" viewBox="0 0 12 12" aria-hidden="true"><path d="M6 1.5v9M2.5 7 6 10.5 9.5 7" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>`,
+  asc:  `<svg width="11" height="11" viewBox="0 0 12 12" aria-hidden="true"><path d="M6 10.5v-9M2.5 5 6 1.5 9.5 5" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>`
+};
+const sortBtn = (attrs, dir, title) =>
+  `<button class="sort${dir ? " on" : ""}" ${attrs} title="${esc(title)}" aria-label="${esc(title)}">${SORT_ICON[dir]}</button>`;
 
 // Sticky header rows and row-header columns need pixel offsets.
 function measureSticky() {
@@ -578,6 +778,7 @@ function renderShelves() {
     ...availDims.map(d => `<span class="pill" tabindex="0" data-drag="${esc(d.id)}" data-kind="dim" data-id="${esc(d.id)}" title="${esc(d.label)}: drag onto Rows or Columns">${esc(d.label)}</span>`),
     ...availMeas.map(m => `<span class="pill measure" tabindex="0" data-drag="${esc(m.id)}" data-kind="measure" data-id="${esc(m.id)}" title="${esc(m.label)}: drag onto Values">${esc(m.label)}</span>`)
   ].join("") || `<span class="ph">Drag a field here to take it off the grid</span>`;
+  $("btnGroup").setAttribute("aria-pressed", String(layout.grouped));
 }
 
 function showEmpty(title, text) {
@@ -647,10 +848,167 @@ function flash(id) {
   });
 }
 
-$("btnSwap").onclick  = () => layout && commit({ ...structuredClone(layout), rows: layout.cols.slice(), cols: layout.rows.slice() });
+$("btnSwap").onclick = () => layout && commit({
+  ...structuredClone(layout), rows: layout.cols.slice(), cols: layout.rows.slice(),
+  totals: { ...layout.totals, grandRows: layout.totals.grandCols, grandCols: layout.totals.grandRows },
+  sort: layout.sort && layout.sort.type === "val" ? null : layout.sort
+});
 $("btnReset").onclick = () => model && commit(defaultLayout());
-$("btnHide").onclick  = () => { $("app").classList.add("collapsed"); measureSticky(); };
-$("showLayout").onclick = () => { $("app").classList.remove("collapsed"); measureSticky(); };
+$("btnShelves").onclick = () => {
+  const collapsed = $("app").classList.toggle("collapsed");
+  $("btnShelves").setAttribute("aria-expanded", String(!collapsed));
+  $("btnShelves").title = collapsed ? "Show the layout shelves" : "Hide the layout shelves";
+  measureSticky();
+};
+$("btnGroup").onclick = () => layout && commit({ ...structuredClone(layout), grouped: !layout.grouped });
+
+// 1st click: default direction, 2nd: reverse, 3rd: unsorted.
+function cycleSort(target, first) {
+  const cur = layout.sort;
+  const same = cur && cur.type === target.type && cur.id === target.id && cur.sig === target.sig;
+  const next = !same ? { ...target, dir: first } : cur.dir === first ? { ...target, dir: first === "asc" ? "desc" : "asc" } : null;
+  commit({ ...structuredClone(layout), sort: next });
+}
+$("grid").addEventListener("click", e => {
+  const b = e.target.closest("button.sort");
+  if (!b || !layout) return;
+  if (b.dataset.sortdim) cycleSort({ type: "dim", id: b.dataset.sortdim }, "asc");
+  else cycleSort({ type: "val", sig: b.dataset.sig }, "desc");
+});
+
+/* ---------- totals menu ---------- */
+function renderTotalsMenu() {
+  const vis = visibleMeasures(), t = layout.totals;
+  const box = (attrs, on, text, disabled) =>
+    `<label${disabled ? ' class="disabled"' : ""}><input type="checkbox" ${attrs}${on ? " checked" : ""}${disabled ? " disabled" : ""}>${esc(text)}</label>`;
+  const section = (title, list, grandKey) => {
+    const lv = activeLevels(list, vis);
+    // Subtotals only make sense for a field with another field inside it.
+    const eligible = lv.filter((id, L) => lv.slice(L + 1).some(x => x !== MEAS));
+    return `<h4>${title}</h4>` +
+      box(`data-grand="${grandKey}"`, t[grandKey], "Grand total", !lv.some(id => id !== MEAS)) +
+      (eligible.map(id => box(`data-sub="${esc(id)}"`, t.sub.includes(id), "Subtotals per " + levelName(id))).join("") ||
+        `<div class="hint">Add a second field for subtotals</div>`);
+  };
+  const radio = (val, text) =>
+    `<label><input type="radio" name="totPos" value="${val}"${t.atEnd === (val === "end") ? " checked" : ""}>${text}</label>`;
+  $("totalsMenu").innerHTML = section("Rows", layout.rows, "grandRows") + "<hr>" +
+    section("Columns", layout.cols, "grandCols") + "<hr><h4>Show totals at</h4>" +
+    radio("start", "Top / left") + radio("end", "Bottom / right");
+}
+function toggleTotalsMenu(open) {
+  const menu = $("totalsMenu"), btn = $("btnTotals");
+  if (open && !layout) return;
+  menu.hidden = !open;
+  btn.setAttribute("aria-expanded", String(open));
+  if (!open) return;
+  renderTotalsMenu();
+  const r = btn.getBoundingClientRect();
+  menu.style.top = r.bottom + 4 + "px";
+  menu.style.left = Math.max(4, Math.min(r.left, innerWidth - menu.offsetWidth - 4)) + "px";
+}
+$("btnTotals").onclick = () => toggleTotalsMenu($("totalsMenu").hidden);
+$("totalsMenu").addEventListener("change", e => {
+  const el = e.target, next = structuredClone(layout), t = next.totals;
+  if (el.dataset.grand) t[el.dataset.grand] = el.checked;
+  else if (el.dataset.sub) t.sub = el.checked ? [...t.sub, el.dataset.sub] : t.sub.filter(x => x !== el.dataset.sub);
+  else if (el.name === "totPos") t.atEnd = el.value === "end";
+  commit(next);
+});
+document.addEventListener("pointerdown", e => {
+  if (!$("totalsMenu").hidden && !e.target.closest("#totalsMenu, #btnTotals")) toggleTotalsMenu(false);
+});
+document.addEventListener("keydown", e => {
+  if (e.key === "Escape" && !$("totalsMenu").hidden) { toggleTotalsMenu(false); $("btnTotals").focus(); }
+});
+
+/* ---------- Excel export: exactly what's on screen ---------- */
+function loadXlsx() {
+  if (window.XLSX) return Promise.resolve(window.XLSX);
+  return new Promise((resolve, reject) => {
+    const sc = document.createElement("script");
+    sc.src = "./xlsx.full.min.js";
+    sc.onload = () => resolve(window.XLSX);
+    sc.onerror = () => reject(new Error("the Excel library (xlsx.full.min.js) didn't load"));
+    document.head.appendChild(sc);
+  });
+}
+
+async function exportExcel() {
+  if (!model || !layout) return;
+  const btn = $("btnExport");
+  btn.disabled = true;
+  try {
+    const XLSX = await loadXlsx();
+    const g = buildGrid();
+    const { rowLv, colLv, rowItems, colItems, text } = g;
+    const nRH = Math.max(rowLv.length, 1), nCH = Math.max(colLv.length, 1);
+    const title = worksheet ? worksheet.name : "Pivot Grid";
+    let params = [];
+    if (worksheet && worksheet.getParametersAsync) {
+      try { params = await worksheet.getParametersAsync(); } catch (e) { console.warn("Parameters unavailable", e); }
+    }
+    const now = new Date();
+    const aoa = [[title], ["Exported " + now.toLocaleString()]];
+    for (const p of params) {
+      const v = p.currentValue || {};
+      aoa.push([`${p.name}: ${v.formattedValue ?? v.value ?? ""}`]);
+    }
+    aoa.push([]);
+    const merges = [], top = aoa.length;
+    const merge = (r, c, rows, cols) => { if (rows > 1 || cols > 1) merges.push({ s: { r, c }, e: { r: r + rows - 1, c: c + cols - 1 } }); };
+
+    const cFD = firstDiff(colItems.map(c => c.t)), rFD = firstDiff(rowItems.map(r => r.t));
+    for (let L = 0; L < nCH; L++) {
+      const row = new Array(nRH + colItems.length).fill(null);
+      row[0] = colLv[L] ? levelName(colLv[L]) : "";
+      merge(top + L, 0, 1, nRH);
+      const runs = runLens(cFD, L);
+      for (let c = 0; c < colItems.length; c++) {
+        if (!runs[c]) continue;
+        row[nRH + c] = colLv.length ? text(colLv, colItems[c], L) : "";
+        merge(top + L, nRH + c, 1, runs[c]);
+      }
+      aoa.push(row);
+    }
+    aoa.push(rowLv.map(levelName));
+    const rRuns = rowLv.map((_, i) => runLens(rFD, i));
+    rowItems.forEach((it, r) => {
+      const row = [];
+      const at = aoa.length;
+      for (let i = 0; i < nRH; i++) {
+        if (!rowLv.length) { row.push(null); continue; }
+        const n = layout.grouped ? rRuns[i][r] : 1;
+        row.push(n ? text(rowLv, it, i) : null);
+        if (n) merge(at, i, n, 1);
+      }
+      for (const c of colItems) {
+        const cell = g.cell(it, c);
+        const mi = rowLv.includes(MEAS) ? it.t[rowLv.indexOf(MEAS)] : colLv.includes(MEAS) ? c.t[colLv.indexOf(MEAS)] : -1;
+        const fmt = mi >= 0 && g.vis[mi] ? model.measures[g.vis[mi].index].fmt : null;
+        row.push(typeof cell.s === "number" && isFinite(cell.s) ? { t: "n", v: cell.s, z: (fmt && fmt.xl) || "General" } : cell.f || null);
+      }
+      aoa.push(row);
+    });
+
+    const ws = XLSX.utils.aoa_to_sheet(aoa);
+    ws["!merges"] = merges;
+    const width = i => Math.min(60, Math.max(8, ...aoa.slice(top).map(r => {
+      const v = r[i]; return v == null ? 0 : String(typeof v === "object" ? (v.v ?? "") : v).length + 2;
+    })));
+    ws["!cols"] = Array.from({ length: nRH + colItems.length }, (_, i) => ({ wch: width(i) }));
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, title.replace(/[\\/?*:[\]]/g, " ").slice(0, 31) || "Sheet1");
+    const day = now.toISOString().slice(0, 10);
+    XLSX.writeFile(wb, `${title.replace(/[\\/:*?"<>|]+/g, "_")}_${day}.xlsx`);
+  } catch (err) {
+    setNotice("Export failed: " + err.message + ". Try again, or reload the sheet.", true);
+    console.error(err);
+  } finally {
+    btn.disabled = false;
+  }
+}
+$("btnExport").onclick = exportExcel;
 
 function foldSide(folded) {
   $("side").classList.toggle("folded", folded);
@@ -734,8 +1092,8 @@ function zones(kind) {
       pillsRect: el.querySelector(".pills").getBoundingClientRect(),
       items: [...el.querySelectorAll(".pill")].map(p => ({ id: p.dataset.id, rect: p.getBoundingClientRect() })) };
   };
-  const side = $("side"), collapsed = $("app").classList.contains("collapsed");
-  const sideZone = kind !== "meas" && !side.hidden && !collapsed
+  const side = $("side");
+  const sideZone = kind !== "meas" && !side.hidden
     ? { zone: "avail", dir: "none", rect: side.getBoundingClientRect(), hl: [side], items: [] } : null;
   if (kind === "measure") {
     // A measure from the field list can also be dropped anywhere on the grid.
@@ -760,8 +1118,10 @@ function zones(kind) {
       span: { left: wr.left, right: Math.min(wr.right, grid.getBoundingClientRect().right) },
       items: cl.filter(th => th.dataset.id).map(th => ({ id: th.dataset.id, rect: th.getBoundingClientRect() })),
       emptyRect: cl[0] && !cl[0].dataset.id ? cl[0].getBoundingClientRect() : null });
-    out.push({ zone: "rows", dir: "h", hl: rl,
+    out.push({ zone: "rows", dir: "h", hl: [...rl, ...grid.querySelectorAll("tbody th.rh")],
       rect: { left: wr.left, right: Math.min(rhRight, wr.right), top: lr.top, bottom: wr.bottom },
+      // The marker runs down the whole visible table so it reads as "into the rows".
+      fullBottom: Math.min(grid.getBoundingClientRect().bottom, wr.bottom),
       items: rl.filter(th => th.dataset.id).map(th => ({ id: th.dataset.id, rect: th.getBoundingClientRect() })),
       emptyRect: rl[0] && !rl[0].dataset.id ? rl[0].getBoundingClientRect() : null });
   }
@@ -803,7 +1163,8 @@ function updateTarget(x, y) {
     if (items[i]) { ref = items[i].rect; xx = ref.left - (z.dir === "wrap" ? 3.5 : 1.5); }
     else if (items.length) { ref = items[items.length - 1].rect; xx = ref.right + (z.dir === "wrap" ? 1 : -1.5); }
     else { ref = z.emptyRect || z.pillsRect || z.rect; xx = ref.left + 4; }
-    Object.assign(m, { left: xx + "px", top: (ref.top + 1) + "px", width: "3px", height: (ref.height - 2) + "px" });
+    const bottom = z.fullBottom ? Math.max(z.fullBottom, ref.bottom) - 1 : ref.bottom - 1;
+    Object.assign(m, { left: xx + "px", top: (ref.top + 1) + "px", width: "3px", height: (bottom - ref.top - 1) + "px" });
   }
 }
 

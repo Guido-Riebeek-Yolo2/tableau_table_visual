@@ -169,6 +169,37 @@ Cases already covered:
 
 ## 8. Roadmap
 
+### 8.0 Current batch of requests (from the user, in order)
+
+Status: `[ ]` open, `[x]` done. Answers to clarification questions are recorded under each item.
+
+1. [x] **Full-height drop indicator for rows.** When dragging a field from columns to rows in the grid, the orange marker must run down the whole table, not just the row-label header cell, so it's obvious the field is going to rows.
+2. [x] **Collapse arrow for the shelves.** A small arrow, like the one on the Fields list, to hide the Columns, Rows and Values shelves.
+   - Answer: one arrow collapses all three shelves together; it replaces the Hide button.
+3. [x] **Row grouping toggle.** On: repeated row values are grouped (one merged label per group, as now). Off: every row shows its full label, repeated on each row.
+   - Answer: a "Group rows" toolbar toggle, on by default.
+4. [x] **Subtotals and grand totals.** The viewer can switch them on and choose the level(s) at which subtotals and grand totals appear.
+   - Answer: a "Totals" toolbar menu with a checkbox per row and column field, plus "Grand total" for rows and for columns.
+   - Answer: totals for both rows and columns.
+   - Answer: default position is the top of each group and the first row / first column. The user can switch to bottom / right.
+5. [x] **Export to Excel.**
+   - Answer: exactly what's on screen (layout, totals, sort, hidden measures), with title rows: sheet name, export date and current parameter values. Numbers as real Excel numbers; grouped rows merged when grouping is on, repeated when off.
+6. [x] **Sort any column by its values.** Dimension columns (e.g. Supplier) sort A–Z; measure columns sort largest to smallest.
+   - Row grouping **on**: sort groups by their subtotal, then the items within each group.
+   - Row grouping **off**: sort all rows as one flat list, so one supplier's games can end up far apart (game 1 in row 1, game 3 in row 32, games 4–5 in rows 60–61).
+   - Answer: 1st click = default direction (measures largest first, dimensions A–Z), 2nd click = reverse, 3rd click = unsorted.
+   - Answer: for measures with no correct subtotal (AVG, COUNTD), groups keep their normal order and only the items inside each group are sorted.
+
+**How the batch was built** (all in `index.html`):
+
+- Toolbar (always visible): shelf collapse arrow (`#btnShelves`, toggles `#app.collapsed`), Swap, Reset, Group rows, Totals menu (`#totalsMenu`), Export to Excel.
+- `layout` gained `grouped`, `totals: { sub: [field ids], grandRows, grandCols, atEnd }` and `sort: { type: "dim", id, dir } | { type: "val", sig, dir }`. Subtotals are stored per field id, so they follow a field to the other axis. `sig` identifies a column by its members and measure, independent of level order.
+- `cellAt(fixed, measureIndex)` computes a value at any level of detail (cells, subtotals, grand totals) from the records, cached per set of fixed dims, using the measure's combine rule.
+- `axisItems(levels, vis, opt)` builds the ordered header paths of an axis, including total paths (`t[i] = -1` means "all members", `tot` = totalled level, -1 for grand). Grouped order sorts each level within its parent; ungrouped value or dimension sorts use `flatCmp` over all rows. Subtotal rows can't sit inside groups that a flat sort has split up, so they're hidden with a notice.
+- `buildGrid()` returns everything `render()` and `exportExcel()` need, so the export matches the screen exactly.
+- Excel: SheetJS (`xlsx.full.min.js`, 0.20.3, lazily loaded). Numbers are native values with a number format derived from Tableau's formatting (`inferFormat(...).xl`). Title rows hold the sheet name, export time and `worksheet.getParametersAsync()` values. The file is named `<sheet>_<YYYY-MM-DD>.xlsx`.
+- Still to confirm inside Tableau: downloads from a viz extension frame (Desktop and Cloud), and the parameter list.
+
 ### 8.1 Next: sorting
 
 - Sort on every value column header and on every measure.
