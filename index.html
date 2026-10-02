@@ -1133,21 +1133,32 @@ const currentUi = () => ({ shelvesCollapsed: $("app").classList.contains("collap
 function applyUi(ui) { setShelves(!!ui.shelvesCollapsed); foldSide(!!ui.sideFolded); }
 function baseLayout() { const d = authorDefault(); return d ? reconcile(d.layout, null) : defaultLayout(); }
 // First load: the viewer's own layout if it's newer than the author's default, else the default.
+// Authors always start from the default, since their changes are the default.
 function startLayout() {
-  const def = authorDefault(), mine = viewerSaved();
+  const def = authorDefault(), mine = isAuthor() ? null : viewerSaved();
   const use = mine && mine.basedOn === (def ? def.savedAt : 0) ? mine : def;
   if (!use) return null;
   applyUi(use.ui);
   return reconcile(use.layout, null);
 }
+const isAuthor = () => tableauReady && tableau.extensions.environment.mode === "authoring" || qs.get("author") === "1";
+let authorSaveTimer = null;
+// Authors (Desktop, or editing on Cloud): every arrangement becomes the workbook default, like a normal sheet.
+// Viewers: changes stay in their browser.
 function rememberLayout() {
   if (!layout || !model) return;
+  if (isAuthor()) {
+    clearTimeout(authorSaveTimer);
+    authorSaveTimer = setTimeout(() => saveDefaultLayout(false, true), 600);
+    return;
+  }
   const def = authorDefault();
   try { localStorage.setItem(viewerKey(), JSON.stringify({ layout, ui: currentUi(), basedOn: def ? def.savedAt : 0 })); } catch (e) { /* storage blocked */ }
   updateResetButton();
 }
 function updateResetButton() {
   if (!layout || !model) return;
+  if (isAuthor()) { $("btnResetLayout").hidden = true; return; }
   const def = authorDefault();
   const changed = JSON.stringify(layout) !== JSON.stringify(baseLayout()) ||
     JSON.stringify(currentUi()) !== JSON.stringify({ shelvesCollapsed: !!(def && def.ui.shelvesCollapsed), sideFolded: !!(def && def.ui.sideFolded) });
@@ -1435,32 +1446,31 @@ const FORMAT_SECTIONS = [
     desc: f => { const n = Object.keys(f.totalRules).length; return n ? `${n} custom` : "automatic"; } },
   { id: "params", title: "Parameter names", body: () => paramSectionHtml(),
     desc: f => { const n = Object.keys(f.paramMap).length; return n ? `${n} chosen` : "automatic"; } },
-  { id: "deflayout", title: "Default layout", body: () => `<div id="fpDefault">${defaultLayoutHtml()}</div>`,
-    desc: () => authorDefault() ? "saved" : "from the Marks card" },
+  { id: "deflayout", title: "Layout", body: () => `<div id="fpDefault">${defaultLayoutHtml()}</div>`,
+    desc: () => authorDefault() ? "saved automatically" : "from the Marks card" },
   { id: "io", title: "Import / export", body: () => ioSectionHtml(), desc: () => "reuse on other sheets" }
 ];
 
 function defaultLayoutHtml(message, isError) {
   const d = authorDefault();
-  return `<div class="fp-hint">${d ? `Default saved ${esc(new Date(d.savedAt).toLocaleString())}.` : "No default saved. The grid starts from the Marks card arrangement."}</div>` +
-    `<div class="menu-foot"><button class="tool" data-dl="save">Use current layout as default</button>` +
-    `<button class="tool" data-dl="clear"${d ? "" : " disabled"}>Clear default</button></div>` +
+  return `<div class="fp-hint">${d ? `Layout saved ${esc(new Date(d.savedAt).toLocaleString())}.` : "No layout saved yet. The grid starts from the Marks card arrangement."}</div>` +
+    `<div class="menu-foot"><button class="tool" data-dl="clear"${d ? "" : " disabled"}>Back to Marks card arrangement</button></div>` +
     (message ? `<div class="fp-hint" role="status"${isError ? ' style="color:#a2403a"' : ""}>${esc(message)}</div>` : "") +
-    `<div class="fp-hint">Arrange the grid (fields, sorting, totals, Group rows, hidden shelves or field list), then save it here. ` +
-    `Everyone opens the sheet in this layout. Changes a viewer makes are remembered in their own browser until you save a new default; ` +
-    `they can go back with Reset layout. Saved straight away, separately from Save below.</div>`;
+    `<div class="fp-hint">While you edit the sheet, the way you arrange the grid is saved automatically as the layout everyone opens with: ` +
+    `field order, sorting, totals, Group rows, collapsed shelves and field list. Save the workbook (and publish) to keep it. ` +
+    `Viewers' own changes are remembered in their browser until you change the layout again; they can go back with Reset layout.</div>`;
 }
-async function saveDefaultLayout(clear) {
+async function saveDefaultLayout(clear, quiet) {
   const show = (msg, err) => { const el = $("fpDefault"); if (el) el.innerHTML = defaultLayoutHtml(msg, err); };
   try {
     ensureInstanceId();
     if (clear) store.erase("layout");
     else store.set("layout", JSON.stringify({ layout, ui: currentUi(), savedAt: Date.now() }));
     await store.save();
-    rememberLayout();
-    show(clear ? "Default cleared." : "Saved. Save the workbook to keep it.");
+    show(clear ? "Cleared." : quiet ? "" : "Saved. Save the workbook to keep it.");
   } catch (err) {
-    show("Couldn't save: " + err.message + ". The default can only be saved while editing the sheet.", true);
+    show("Couldn't save the layout: " + err.message, true);
+    if (quiet) setNotice("Couldn't save the layout: " + err.message, true);
   }
   updateSummaries();
 }
@@ -1886,7 +1896,11 @@ $("fpBody").addEventListener("input", e => {
 });
 $("formatPanel").addEventListener("click", async e => {
   const dl = e.target.closest("[data-dl]");
-  if (dl) return saveDefaultLayout(dl.dataset.dl === "clear");
+  if (dl) {
+    await saveDefaultLayout(true);
+    layout = defaultLayout(); applyUi({}); render();
+    return;
+  }
   const io = e.target.closest("[data-io]");
   if (io) {
     const act = io.dataset.io;
