@@ -320,6 +320,7 @@
       <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path d="M2.5 4.5 6 8l3.5-3.5" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>
     </button>
     <span class="tb-title">Layout</span>
+    <button class="tool" id="btnResetLayout" hidden title="Go back to the layout the author saved"><span>Reset layout</span></button>
     <span class="spacer"></span>
     <button class="tool" id="btnSort" aria-haspopup="true" aria-expanded="false" aria-controls="sortMenu" title="Sort the grid by one or more fields">
       <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path d="M3.5 1.5v9M1.5 8.5l2 2 2-2M7 3h4M7 6h3M7 9h2" fill="none" stroke="currentColor" stroke-width="1.3"/></svg>
@@ -1070,9 +1071,96 @@ function setModel(m) {
   const prev = model;
   model = m;
   applyFieldFormats(m);
-  layout = reconcile(layout, prev);
+  layout = layout ? reconcile(layout, prev) : startLayout() || defaultLayout();
   render();
+  updateResetButton();
 }
+
+/* ============================================================
+   SAVED LAYOUTS
+   Author default: workbook settings key "layout", what everyone starts from.
+   A viewer's own changes: this browser's localStorage, until the author saves a newer default.
+   ============================================================ */
+let tableauReady = false;   // settings live in the workbook once Tableau is connected; the local preview uses localStorage
+const store = {
+  get(k) { try { return tableauReady ? tableau.extensions.settings.get(k) : localStorage.getItem("pivotgrid:local:" + k); } catch (e) { return null; } },
+  set(k, v) { if (tableauReady) tableau.extensions.settings.set(k, v); else localStorage.setItem("pivotgrid:local:" + k, v); },
+  erase(k) { if (tableauReady) tableau.extensions.settings.erase(k); else localStorage.removeItem("pivotgrid:local:" + k); },
+  save() { return tableauReady ? tableau.extensions.settings.saveAsync() : Promise.resolve(); }
+};
+const readJSON = t => { try { return t ? JSON.parse(t) : null; } catch (e) { return null; } };
+// Gives this extension instance a stable id so viewers' saved layouts can't collide across workbooks.
+function ensureInstanceId() {
+  if (!store.get("instanceId")) store.set("instanceId", crypto.randomUUID ? crypto.randomUUID() : Date.now() + "-" + Math.random());
+}
+function viewerKey() {
+  let id = store.get("instanceId");
+  if (!id) {
+    const sig = [...model.dims, ...model.measures].map(f => f.id).sort().join("|");
+    let h = 5381;
+    for (let i = 0; i < sig.length; i++) h = (h * 33 + sig.charCodeAt(i)) >>> 0;
+    id = (worksheet ? worksheet.name : "demo") + "|" + h.toString(36);
+  }
+  return "pivotgrid:view:" + id;
+}
+// Stored layouts come from the workbook or the browser: keep only well-formed values.
+function cleanLayout(o) {
+  if (!o || typeof o !== "object") return null;
+  const seen = new Set();
+  const ids = a => (Array.isArray(a) ? a : []).filter(x => typeof x === "string" && !seen.has(x) && seen.add(x)).slice(0, 200);
+  const rows = ids(o.rows), cols = ids(o.cols), removed = ids(o.removed);
+  seen.clear();
+  const measures = ids(o.measures);
+  seen.clear();
+  const t = o.totals && typeof o.totals === "object" ? o.totals : {};
+  const sort = (Array.isArray(o.sort) ? o.sort : []).slice(0, 20)
+    .filter(k => k && ((k.type === "dim" && typeof k.id === "string") || (k.type === "val" && typeof k.sig === "string")))
+    .map(k => ({ ...(k.type === "dim" ? { type: "dim", id: k.id } : { type: "val", sig: k.sig }), dir: k.dir === "desc" ? "desc" : "asc" }));
+  return { rows, cols, measures, hidden: ids(o.hidden), removed, grouped: o.grouped !== false,
+    totals: { sub: (seen.clear(), ids(t.sub)), grandRows: !!t.grandRows, grandCols: !!t.grandCols, atEnd: !!t.atEnd }, sort };
+}
+function authorDefault() {
+  const d = readJSON(store.get("layout")), l = d && cleanLayout(d.layout);
+  return l ? { layout: l, ui: d.ui || {}, savedAt: Number(d.savedAt) || 0 } : null;
+}
+function viewerSaved() {
+  let d = null;
+  try { d = readJSON(localStorage.getItem(viewerKey())); } catch (e) { return null; }
+  const l = d && cleanLayout(d.layout);
+  return l ? { layout: l, ui: d.ui || {}, basedOn: Number(d.basedOn) || 0 } : null;
+}
+const currentUi = () => ({ shelvesCollapsed: $("app").classList.contains("collapsed"), sideFolded: $("side").classList.contains("folded") });
+function applyUi(ui) { setShelves(!!ui.shelvesCollapsed); foldSide(!!ui.sideFolded); }
+function baseLayout() { const d = authorDefault(); return d ? reconcile(d.layout, null) : defaultLayout(); }
+// First load: the viewer's own layout if it's newer than the author's default, else the default.
+function startLayout() {
+  const def = authorDefault(), mine = viewerSaved();
+  const use = mine && mine.basedOn === (def ? def.savedAt : 0) ? mine : def;
+  if (!use) return null;
+  applyUi(use.ui);
+  return reconcile(use.layout, null);
+}
+function rememberLayout() {
+  if (!layout || !model) return;
+  const def = authorDefault();
+  try { localStorage.setItem(viewerKey(), JSON.stringify({ layout, ui: currentUi(), basedOn: def ? def.savedAt : 0 })); } catch (e) { /* storage blocked */ }
+  updateResetButton();
+}
+function updateResetButton() {
+  if (!layout || !model) return;
+  const def = authorDefault();
+  const changed = JSON.stringify(layout) !== JSON.stringify(baseLayout()) ||
+    JSON.stringify(currentUi()) !== JSON.stringify({ shelvesCollapsed: !!(def && def.ui.shelvesCollapsed), sideFolded: !!(def && def.ui.sideFolded) });
+  $("btnResetLayout").hidden = !changed;
+}
+$("btnResetLayout").onclick = () => {
+  try { localStorage.removeItem(viewerKey()); } catch (e) { /* storage blocked */ }
+  const def = authorDefault();
+  applyUi(def ? def.ui : {});
+  layout = baseLayout();
+  render();
+  updateResetButton();
+};
 
 /* ============================================================
    LAYOUT CHANGES
@@ -1081,6 +1169,7 @@ function commit(next, movedId) {
   if (JSON.stringify(next) === JSON.stringify(layout)) return;
   layout = next;
   render();
+  rememberLayout();
   if (movedId) flash(movedId);
 }
 function moveField(id, zone, beforeId) {
@@ -1123,12 +1212,13 @@ function flash(id) {
   });
 }
 
-$("btnShelves").onclick = () => {
-  const collapsed = $("app").classList.toggle("collapsed");
+function setShelves(collapsed) {
+  $("app").classList.toggle("collapsed", collapsed);
   $("btnShelves").setAttribute("aria-expanded", String(!collapsed));
   $("btnShelves").title = collapsed ? "Show the layout shelves" : "Hide the layout shelves";
   measureSticky();
-};
+}
+$("btnShelves").onclick = () => { setShelves(!$("app").classList.contains("collapsed")); rememberLayout(); };
 $("btnGroup").onclick = () => layout && commit({ ...structuredClone(layout), grouped: !layout.grouped });
 
 /* ---------- sorting: an ordered list of keys ---------- */
@@ -1345,8 +1435,35 @@ const FORMAT_SECTIONS = [
     desc: f => { const n = Object.keys(f.totalRules).length; return n ? `${n} custom` : "automatic"; } },
   { id: "params", title: "Parameter names", body: () => paramSectionHtml(),
     desc: f => { const n = Object.keys(f.paramMap).length; return n ? `${n} chosen` : "automatic"; } },
+  { id: "deflayout", title: "Default layout", body: () => `<div id="fpDefault">${defaultLayoutHtml()}</div>`,
+    desc: () => authorDefault() ? "saved" : "from the Marks card" },
   { id: "io", title: "Import / export", body: () => ioSectionHtml(), desc: () => "reuse on other sheets" }
 ];
+
+function defaultLayoutHtml(message, isError) {
+  const d = authorDefault();
+  return `<div class="fp-hint">${d ? `Default saved ${esc(new Date(d.savedAt).toLocaleString())}.` : "No default saved. The grid starts from the Marks card arrangement."}</div>` +
+    `<div class="menu-foot"><button class="tool" data-dl="save">Use current layout as default</button>` +
+    `<button class="tool" data-dl="clear"${d ? "" : " disabled"}>Clear default</button></div>` +
+    (message ? `<div class="fp-hint" role="status"${isError ? ' style="color:#a2403a"' : ""}>${esc(message)}</div>` : "") +
+    `<div class="fp-hint">Arrange the grid (fields, sorting, totals, Group rows, hidden shelves or field list), then save it here. ` +
+    `Everyone opens the sheet in this layout. Changes a viewer makes are remembered in their own browser until you save a new default; ` +
+    `they can go back with Reset layout. Saved straight away, separately from Save below.</div>`;
+}
+async function saveDefaultLayout(clear) {
+  const show = (msg, err) => { const el = $("fpDefault"); if (el) el.innerHTML = defaultLayoutHtml(msg, err); };
+  try {
+    ensureInstanceId();
+    if (clear) store.erase("layout");
+    else store.set("layout", JSON.stringify({ layout, ui: currentUi(), savedAt: Date.now() }));
+    await store.save();
+    rememberLayout();
+    show(clear ? "Default cleared." : "Saved. Save the workbook to keep it.");
+  } catch (err) {
+    show("Couldn't save: " + err.message + ". The default can only be saved while editing the sheet.", true);
+  }
+  updateSummaries();
+}
 
 /* ---------- import / export of format settings ---------- */
 const NON_STYLE = ["paramMap", "measureFormats", "dateFormats", "totalRules"];
@@ -1710,10 +1827,11 @@ $("fpBody").addEventListener("toggle", e => {
 }, true);
 async function closeFormat(save) {
   if (!save) setFormat(savedFormat || format);
-  else if (!LOCAL) {
+  else {
     try {
-      tableau.extensions.settings.set("format", JSON.stringify(format));
-      await tableau.extensions.settings.saveAsync();
+      ensureInstanceId();
+      store.set("format", JSON.stringify(format));
+      await store.save();
     } catch (err) {
       setNotice("Couldn't save the format: " + err.message + ". Formatting can only be saved while editing the sheet.", true);
       return;
@@ -1767,6 +1885,8 @@ $("fpBody").addEventListener("input", e => {
   setFormat(cleanFormat({ ...format, [key]: el.type === "checkbox" ? el.checked : el.value }));
 });
 $("formatPanel").addEventListener("click", async e => {
+  const dl = e.target.closest("[data-dl]");
+  if (dl) return saveDefaultLayout(dl.dataset.dl === "clear");
   const io = e.target.closest("[data-io]");
   if (io) {
     const act = io.dataset.io;
@@ -1897,8 +2017,8 @@ function foldSide(folded) {
   $("btnSide").setAttribute("aria-expanded", String(!folded));
   $("btnSide").title = folded ? "Expand the field list" : "Collapse the field list";
 }
-$("btnSide").onclick = e => { e.stopPropagation(); foldSide(!$("side").classList.contains("folded")); };
-$("side").addEventListener("click", () => { if ($("side").classList.contains("folded")) foldSide(false); });
+$("btnSide").onclick = e => { e.stopPropagation(); foldSide(!$("side").classList.contains("folded")); rememberLayout(); };
+$("side").addEventListener("click", () => { if ($("side").classList.contains("folded")) { foldSide(false); rememberLayout(); } });
 
 /* ============================================================
    DRAG AND DROP
@@ -2225,6 +2345,8 @@ function demoData() {
 function startDemo(reason, isError) {
   baseNotice = reason; baseError = !!isError;
   diagLines = ["MODE\n  Demo data"];
+  format = cleanFormat(readJSON(store.get("format")) || {});
+  applyFormat(format);
   setModel(buildModel(demoData()));
 }
 
@@ -2274,8 +2396,8 @@ function diag() {
     return showEmpty("Add this as a viz extension",
       "This extension draws a worksheet. On a sheet, open the mark type menu on the Marks card and choose Add Extension.");
   }
-  try { format = cleanFormat(JSON.parse(tableau.extensions.settings.get("format") || "{}")); }
-  catch (e) { format = { ...DEFAULT_FORMAT }; }
+  tableauReady = true;
+  format = cleanFormat(readJSON(store.get("format")) || {});
   applyFormat(format);
   worksheet.addEventListener(tableau.TableauEventType.SummaryDataChanged, refreshFromTableau);
   refreshFromTableau();
