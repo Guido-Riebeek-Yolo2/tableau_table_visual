@@ -4,8 +4,7 @@
     <default-locale>en_US</default-locale>
     <name resource-id="name"/>
     <description>A text table that viewers can rearrange: drag fields between rows and columns, reorder and hide measures.</description>
-    <author name="BI Team"
-            organization="Hub88">
+    <author name="BI Team" email="guido.riebeek@yolo.com" organization="Hub88" website="https://github.com/Guido-Riebeek-Yolo2/tableau_table_visual"/>
     <min-api-version>1.11</min-api-version>
 
     <source-location>
