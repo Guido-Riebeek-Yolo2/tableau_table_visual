@@ -86,6 +86,12 @@
   .tool:hover { background: var(--band); }
   .tool[aria-pressed="true"], .tool[aria-expanded="true"] { background: #e8f2f7; border-color: var(--dim); color: var(--dim-d); }
   .tool:disabled { opacity: .5; cursor: progress; }
+  .decs { display: inline-flex; align-items: center; }
+  .decs .tool { padding: 0 5px; font: 600 10px/1 var(--font); letter-spacing: -.2px; }
+  .decs .tool:first-child { border-radius: 3px 0 0 3px; }
+  .decs .tool:last-of-type { border-radius: 0 3px 3px 0; margin-left: -1px; }
+  .decs .tool:disabled { cursor: default; }
+  #decCount { padding-left: 4px; color: var(--dim-d); font-weight: 600; }
 
   .menu {
     position: fixed; z-index: 50; min-width: 210px; padding: 4px 0; background: var(--bg);
@@ -346,6 +352,11 @@
       <span>Totals</span>
       <svg width="9" height="9" viewBox="0 0 12 12" aria-hidden="true"><path d="M2.5 4.5 6 8l3.5-3.5" fill="none" stroke="currentColor" stroke-width="1.6"/></svg>
     </button>
+    <span class="decs" role="group" aria-label="Decimals">
+      <button class="tool" id="btnDecLess" title="Show fewer decimals" aria-label="Show fewer decimals">.00&rarr;.0</button>
+      <button class="tool" id="btnDecMore" title="Show more decimals" aria-label="Show more decimals">.0&rarr;.00</button>
+      <b id="decCount"></b>
+    </span>
     <button class="tool" id="btnCopy" hidden title="Copy the selected values (Ctrl+C). Ctrl+click adds cells, Shift+click selects a range, Esc clears.">
       <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path d="M4 4h6.5v6.5H4zM8 4V1.5H1.5V8H4" fill="none" stroke="currentColor" stroke-width="1.2"/></svg>
       <span>Copy</span>
@@ -432,6 +443,7 @@ const COMBINE_RULE = { SUM: "sum", COUNT: "sum", CNT: "sum", MIN: "min", MAX: "m
 // Matches the current Sheet 6 layout: Measure Names first on Columns.
 const DEFAULT_MEASURES_AXIS = "cols";
 const DEFAULT_MEASURES_AT   = 0;
+const MAX_DEC = 6;   // the toolbar can add or remove up to this many decimals
 
 // Fields driven by a parameter (e.g. "Grid Level 1" <- "Kp.03 Grid Level 1 (P)") show the
 // parameter's current value as their name; a value in PARAM_NONE hides the field entirely.
@@ -536,6 +548,7 @@ const ruleOf = id => { const m = AGG_RE.exec(String(id).trim()); return (m && CO
 function inferFormat(cells) {
   const plain = v => String(Math.round(v * 1e6) / 1e6);
   plain.xl = "General";
+  plain.withDec = () => plain;
   const nums = cells.filter(c => c && typeof c.s === "number" && isFinite(c.s) && c.s !== 0 && /\d/.test(c.f));
   if (!nums.length) return plain;
   const split = c => /^(.*?)(\d(?:[\d.,'\s\u00a0\u202f]*\d)?)(\D*)$/.exec(c.f);
@@ -561,22 +574,26 @@ function inferFormat(cells) {
       if (/\D/.test(fp)) continue;
       const val = Number(ip.replace(/\D/g, "") + "." + (fp || "0"));
       if (Math.abs(val - Math.abs(ex.s) * scale) > 0.5 * 10 ** -fp.length + 1e-9 * val) continue;
-      const d = fp.length, dp = dec || (last === "." ? "," : ".");
+      const dp = dec || (last === "." ? "," : ".");
       const group = ip.replace(/\d/g, "")[0] || (val >= 1000 ? "" : dp === "," ? "." : ",");
-      const fn = v => {
-        const r = (Math.abs(v) * scale).toFixed(d);
-        const [i, f] = r.split(".");
-        const n = (group ? i.replace(/\B(?=(\d{3})+(?!\d))/g, group) : i) + (f ? dp + f : "");
-        return v < 0 && /[1-9]/.test(r) ? negPre + n + negSuf : posPre + n + posSuf;
+      const make = d => {
+        const fn = v => {
+          const r = (Math.abs(v) * scale).toFixed(d);
+          const [i, f] = r.split(".");
+          const n = (group ? i.replace(/\B(?=(\d{3})+(?!\d))/g, group) : i) + (f ? dp + f : "");
+          return v < 0 && /[1-9]/.test(r) ? negPre + n + negSuf : posPre + n + posSuf;
+        };
+        // Same format as an Excel number format string (Excel always uses "," and "." in the code).
+        const lit = s => s ? '"' + s.replace(/"/g, "") + '"' : "";
+        let body = (group ? "#,##0" : "0") + (d ? "." + "0".repeat(d) : ""), suf = posSuf;
+        if (scale === 100) { body += "%"; suf = suf.replace("%", ""); }
+        else if (scale < 1) body += ",".repeat(Math.round(-Math.log10(scale) / 3));
+        const pos = lit(posPre) + body + lit(suf);
+        fn.xl = pos + ";" + (negPre.includes("(") ? "(" + pos + ")" : "-" + pos);
+        fn.withDec = k => make(Math.max(0, fp.length + k));
+        return fn;
       };
-      // Same format as an Excel number format string (Excel always uses "," and "." in the code).
-      const lit = s => s ? '"' + s.replace(/"/g, "") + '"' : "";
-      let body = (group ? "#,##0" : "0") + (d ? "." + "0".repeat(d) : ""), suf = posSuf;
-      if (scale === 100) { body += "%"; suf = suf.replace("%", ""); }
-      else if (scale < 1) body += ",".repeat(Math.round(-Math.log10(scale) / 3));
-      const pos = lit(posPre) + body + lit(suf);
-      fn.xl = pos + ";" + (negPre.includes("(") ? "(" + pos + ")" : "-" + pos);
-      return fn;
+      return make(fp.length);
     }
   }
   return plain;
@@ -630,7 +647,7 @@ function defaultLayout() {
   }
   return {
     rows, cols, measures: model.measures.filter(m => m.axis !== "fields").map(m => m.id), hidden: [], removed: [],
-    grouped: true, expand: false, open: { depth: 0, flip: [] },
+    grouped: true, expand: false, open: { depth: 0, flip: [] }, dec: 0,
     totals: { sub: [], grandRows: false, grandCols: false, atEnd: false },  // sub: field ids with subtotals, on whichever axis
     sort: []     // ordered keys: { type: "dim", id, dir } | { type: "val", sig: column signature, dir }
   };
@@ -658,7 +675,7 @@ function reconcile(old, prev) {
   const hidden = old.hidden.filter(id => measures.includes(id));
   const totals = { ...def.totals, ...old.totals, sub: old.totals.sub.filter(id => id === MEAS || dimIds.has(id)) };
   const sort = (Array.isArray(old.sort) ? old.sort : []).filter(k => k.type !== "dim" || dimIds.has(k.id));
-  return { rows, cols, measures, hidden, removed, grouped: old.grouped, expand: !!old.expand, open: old.open || def.open, totals, sort };
+  return { rows, cols, measures, hidden, removed, grouped: old.grouped, expand: !!old.expand, open: old.open || def.open, dec: old.dec || 0, totals, sort };
 }
 
 const visibleMeasures = () => layout.measures.filter(id => !layout.hidden.includes(id) && !isOff(id)).map(id => model.measById.get(id));
@@ -901,14 +918,20 @@ function buildGrid() {
     if (it.fold != null) return "";
     return it.t.findIndex(v => v < 0) === i ? (it.tot === -1 ? "Grand total" : "Total") : "";
   };
+  // Per visible measure: its custom format, shifted by the toolbar's extra/fewer decimals.
+  const fmts = vis.map(m => {
+    const f = m.custom || (layout.dec ? m.fmt : null);
+    return f && layout.dec ? f.withDec(layout.dec) : f;
+  });
   return {
     vis, rowLv, colLv, rowItems, colItems, text,
     cell: (r, c) => {
       const v = value(r.fx, r.t, c);
       const mi = rMeasAt >= 0 ? r.t[rMeasAt] : cMeasAt >= 0 ? c.t[cMeasAt] : -1;
-      const custom = vis[mi] && vis[mi].custom;
-      return custom && typeof v.s === "number" && isFinite(v.s) ? { f: custom(v.s), s: v.s } : v;
+      const f = fmts[mi];
+      return f && typeof v.s === "number" && isFinite(v.s) ? { f: f(v.s), s: v.s } : v;
     },
+    fmtOf: mi => fmts[mi] || (vis[mi] && vis[mi].fmt),
     subHidden: !!flatCmp && rowSub.size > 0,
     fold: { can: canFold, key: foldKey, anyOpen },
     foldOff: layout.expand && !layout.grouped && rowLv.filter(id => id !== MEAS).length > 1
@@ -1102,6 +1125,10 @@ function renderShelves() {
   ].join("") || `<span class="ph">Drag a field here to take it off the grid</span>`;
   $("btnGroup").setAttribute("aria-pressed", String(layout.grouped));
   $("btnExpand").setAttribute("aria-pressed", String(!!layout.expand));
+  $("btnDecMore").disabled = layout.dec >= MAX_DEC;
+  $("btnDecLess").disabled = layout.dec <= -MAX_DEC;
+  $("decCount").textContent = layout.dec ? (layout.dec > 0 ? "+" : "\u2212") + Math.abs(layout.dec) : "";
+  $("decCount").title = layout.dec ? `${Math.abs(layout.dec)} ${layout.dec > 0 ? "more" : "fewer"} decimal${Math.abs(layout.dec) > 1 ? "s" : ""} than the sheet's format` : "";
   $("sortCount").textContent = layout.sort.length ? `(${layout.sort.length})` : "";
   $("btnSort").setAttribute("aria-pressed", String(layout.sort.length > 0));
 }
@@ -1156,6 +1183,7 @@ function cleanLayout(o) {
     .map(k => ({ ...(k.type === "dim" ? { type: "dim", id: k.id } : { type: "val", sig: k.sig }), dir: k.dir === "desc" ? "desc" : "asc" }));
   return { rows, cols, measures, hidden: ids(o.hidden), removed, grouped: o.grouped !== false, expand: o.expand === true,
     open: { depth: Math.max(0, Math.min(20, parseInt(o.open && o.open.depth) || 0)), flip: (seen.clear(), ids(o.open && o.open.flip, 1000)) },
+    dec: Math.max(-MAX_DEC, Math.min(MAX_DEC, parseInt(o.dec) || 0)),
     totals: { sub: (seen.clear(), ids(t.sub)), grandRows: !!t.grandRows, grandCols: !!t.grandCols, atEnd: !!t.atEnd }, sort };
 }
 function authorDefault() {
@@ -1262,6 +1290,9 @@ function setShelves(collapsed) {
 $("btnShelves").onclick = () => { setShelves(!$("app").classList.contains("collapsed")); rememberLayout(); };
 $("btnGroup").onclick = () => layout && commit({ ...structuredClone(layout), grouped: !layout.grouped });
 $("btnExpand").onclick = () => layout && commit({ ...structuredClone(layout), expand: !layout.expand });
+const shiftDec = k => layout && commit({ ...structuredClone(layout), dec: Math.max(-MAX_DEC, Math.min(MAX_DEC, (layout.dec || 0) + k)) });
+$("btnDecMore").onclick = () => shiftDec(1);
+$("btnDecLess").onclick = () => shiftDec(-1);
 
 // Expand all opens that level and the ones above it; collapse all closes it and the ones below.
 function foldAll(L, open) {
@@ -1687,6 +1718,7 @@ function makeNumberFormat(c) {
     (pct ? "%" : ",".repeat({ K: 1, M: 2, B: 3 }[c.units] || 0));
   const pos = lit(c.prefix) + num + (pct ? "" : lit(c.units)) + lit(c.suffix);
   fn.xl = pos + ";" + (c.negative === "paren" ? "(" + pos + ")" : "-" + pos);
+  fn.withDec = k => makeNumberFormat({ ...c, decimals: Math.max(0, c.decimals + k) });
   return fn;
 }
 // Tableau sends dates as UTC, so they're formatted in UTC.
@@ -2118,7 +2150,7 @@ async function exportExcel() {
         const cell = g.cell(it, c);
         const mi = rowLv.includes(MEAS) ? it.t[rowLv.indexOf(MEAS)] : colLv.includes(MEAS) ? c.t[colLv.indexOf(MEAS)] : -1;
         const meas = mi >= 0 && g.vis[mi];
-        const fmt = meas ? meas.custom || meas.fmt : null;
+        const fmt = meas ? g.fmtOf(mi) : null;
         row.push(typeof cell.s === "number" && isFinite(cell.s) ? { t: "n", v: cell.s, z: (fmt && fmt.xl) || "General" } : cell.f || null);
       }
       aoa.push(row);
