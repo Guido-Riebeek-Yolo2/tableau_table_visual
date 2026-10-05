@@ -1123,7 +1123,7 @@ function setModel(m) {
 /* ============================================================
    SAVED LAYOUTS
    Author default: workbook settings key "layout", what everyone starts from.
-   A viewer's own changes: this browser's localStorage, until the author saves a newer default.
+   A viewer's changes last only while the view is open.
    ============================================================ */
 let tableauReady = false;   // settings live in the workbook once Tableau is connected; the local preview uses localStorage
 const store = {
@@ -1133,21 +1133,9 @@ const store = {
   save() { return tableauReady ? tableau.extensions.settings.saveAsync() : Promise.resolve(); }
 };
 const readJSON = t => { try { return t ? JSON.parse(t) : null; } catch (e) { return null; } };
-// Gives this extension instance a stable id so viewers' saved layouts can't collide across workbooks.
-function ensureInstanceId() {
-  if (!store.get("instanceId")) store.set("instanceId", crypto.randomUUID ? crypto.randomUUID() : Date.now() + "-" + Math.random());
-}
-function viewerKey() {
-  let id = store.get("instanceId");
-  if (!id) {
-    const sig = [...model.dims, ...model.measures].map(f => f.id).sort().join("|");
-    let h = 5381;
-    for (let i = 0; i < sig.length; i++) h = (h * 33 + sig.charCodeAt(i)) >>> 0;
-    id = (worksheet ? worksheet.name : "demo") + "|" + h.toString(36);
-  }
-  return "pivotgrid:view:" + id;
-}
-// Stored layouts come from the workbook or the browser: keep only well-formed values.
+// Earlier versions kept viewers' layouts in the browser; remove what's left of them.
+try { Object.keys(localStorage).filter(k => k.startsWith("pivotgrid:view:")).forEach(k => localStorage.removeItem(k)); } catch (e) { /* storage blocked */ }
+// Stored layouts come from the workbook: keep only well-formed values.
 function cleanLayout(o) {
   if (!o || typeof o !== "object") return null;
   const seen = new Set();
@@ -1167,30 +1155,22 @@ function authorDefault() {
   const d = readJSON(store.get("layout")), l = d && cleanLayout(d.layout);
   return l ? { layout: l, ui: d.ui || {}, savedAt: Number(d.savedAt) || 0 } : null;
 }
-function viewerSaved() {
-  let d = null;
-  try { d = readJSON(localStorage.getItem(viewerKey())); } catch (e) { return null; }
-  const l = d && cleanLayout(d.layout);
-  return l ? { layout: l, ui: d.ui || {}, basedOn: Number(d.basedOn) || 0 } : null;
-}
 const currentUi = () => ({ shelvesCollapsed: $("app").classList.contains("collapsed"), sideFolded: $("side").classList.contains("folded") });
 // Measures struck through by a click are for the current session only, never saved.
 const persistable = l => ({ ...l, hidden: [] });
 function applyUi(ui) { setShelves(!!ui.shelvesCollapsed); foldSide(!!ui.sideFolded); }
 function baseLayout() { const d = authorDefault(); return d ? persistable(reconcile(d.layout, null)) : defaultLayout(); }
-// First load: the viewer's own layout if it's newer than the author's default, else the default.
-// Authors always start from the default, since their changes are the default.
+// Everyone opens the view with the author's layout.
 function startLayout() {
-  const def = authorDefault(), mine = isAuthor() ? null : viewerSaved();
-  const use = mine && mine.basedOn === (def ? def.savedAt : 0) ? mine : def;
-  if (!use) return null;
-  applyUi(use.ui);
-  return persistable(reconcile(use.layout, null));
+  const def = authorDefault();
+  if (!def) return null;
+  applyUi(def.ui);
+  return persistable(reconcile(def.layout, null));
 }
 const isAuthor = () => tableauReady && tableau.extensions.environment.mode === "authoring" || qs.get("author") === "1";
 let authorSaveTimer = null;
 // Authors (Desktop, or editing on Cloud): every arrangement becomes the workbook default, like a normal sheet.
-// Viewers: changes stay in their browser.
+// Viewers: changes aren't saved; the next visit starts from the author's layout again.
 function rememberLayout() {
   if (!layout || !model) return;
   if (isAuthor()) {
@@ -1198,8 +1178,6 @@ function rememberLayout() {
     authorSaveTimer = setTimeout(() => saveDefaultLayout(false, true), 600);
     return;
   }
-  const def = authorDefault();
-  try { localStorage.setItem(viewerKey(), JSON.stringify({ layout: persistable(layout), ui: currentUi(), basedOn: def ? def.savedAt : 0 })); } catch (e) { /* storage blocked */ }
   updateResetButton();
 }
 function updateResetButton() {
@@ -1211,7 +1189,6 @@ function updateResetButton() {
   $("btnResetLayout").hidden = !changed;
 }
 $("btnResetLayout").onclick = () => {
-  try { localStorage.removeItem(viewerKey()); } catch (e) { /* storage blocked */ }
   const def = authorDefault();
   applyUi(def ? def.ui : {});
   layout = baseLayout();
@@ -1522,12 +1499,11 @@ function defaultLayoutHtml(message, isError) {
     (message ? `<div class="fp-hint" role="status"${isError ? ' style="color:#a2403a"' : ""}>${esc(message)}</div>` : "") +
     `<div class="fp-hint">While you edit the sheet, the way you arrange the grid is saved automatically as the layout everyone opens with: ` +
     `field order, sorting, totals, Group rows, collapsed shelves and field list. Save the workbook (and publish) to keep it. ` +
-    `Viewers' own changes are remembered in their browser until you change the layout again; they can go back with Reset layout.</div>`;
+    `Viewers can rearrange the grid while they have the view open; every visit starts from this layout again.</div>`;
 }
 async function saveDefaultLayout(clear, quiet) {
   const show = (msg, err) => { const el = $("fpDefault"); if (el) el.innerHTML = defaultLayoutHtml(msg, err); };
   try {
-    ensureInstanceId();
     if (clear) store.erase("layout");
     else store.set("layout", JSON.stringify({ layout: persistable(layout), ui: currentUi(), savedAt: Date.now() }));
     await store.save();
@@ -1903,7 +1879,6 @@ async function closeFormat(save) {
   if (!save) setFormat(savedFormat || format);
   else {
     try {
-      ensureInstanceId();
       store.set("format", JSON.stringify(format));
       await store.save();
     } catch (err) {
