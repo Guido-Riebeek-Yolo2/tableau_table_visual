@@ -240,7 +240,7 @@ Status: `[ ]` open, `[x]` done. Answers to clarification questions are recorded 
 17. [x] **Expand rows (accordion).** Toolbar toggle `#btnExpand`, `layout.expand` (default off, saved with the layout like Group rows). Works only with Group rows on and 2+ row dimensions; otherwise a notice says so.
    - Every row dimension with another dimension after it gets a +/− box. A closed group is one row per measure (`fold: L` items from `axisItems`, computed like a subtotal but without the Total label; inner levels blank). Subtotals at that level only show when the group is open. Totals rules apply, so "Leave blank" measures are blank on closed rows.
    - The row-label header of each such level has Expand all / Collapse all (expand opens that level and those above it; collapse closes it and those below).
-   - Open/closed state is session only: `folds = { depth, flip }` (levels below `depth` open; `flip` holds `"L:field=member|…"` exceptions). Start state: all closed.
+   - Open/closed state is part of the layout: `layout.open = { depth, flip }` (levels below `depth` open; `flip` holds `"L:field=member|…"` exceptions, max 1000). So the author's default saves which groups are open; viewers start from that and their changes last only for the session. With no saved state everything starts closed.
    - Excel export and tooltips follow what's shown.
 18. [x] **Field list sorted A to Z**: dimensions first, then measures, each by label (`localeCompare`, numeric, case-insensitive). Shelves keep their grid order.
 

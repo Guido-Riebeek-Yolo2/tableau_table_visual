@@ -482,9 +482,8 @@ const natural = new Intl.Collator(undefined, { numeric: true, sensitivity: "base
 const cmpKey = (a, b) => (typeof a === "number" && typeof b === "number") ? a - b : natural.compare(String(a), String(b));
 
 let model = null;      // the sheet's data, independent of layout
-let layout = null;     // { rows, cols, measures, hidden, removed, grouped, expand, totals: { sub, grandRows, grandCols, atEnd }, sort }
-// Open row groups when Expand rows is on: levels below `depth` start open, `flip` holds "level:path" exceptions. Session only.
-const folds = { depth: 0, flip: new Set() };
+let layout = null;     // { rows, cols, measures, hidden, removed, grouped, expand, open, totals: { sub, grandRows, grandCols, atEnd }, sort }
+// layout.open: row groups open with Expand rows on. Levels below `depth` start open; `flip` holds "level:path" exceptions.
 let worksheet = null;
 let diagLines = [];
 let loadWarning = "";
@@ -625,7 +624,7 @@ function defaultLayout() {
   }
   return {
     rows, cols, measures: model.measures.filter(m => m.axis !== "fields").map(m => m.id), hidden: [], removed: [],
-    grouped: true, expand: false,
+    grouped: true, expand: false, open: { depth: 0, flip: [] },
     totals: { sub: [], grandRows: false, grandCols: false, atEnd: false },  // sub: field ids with subtotals, on whichever axis
     sort: []     // ordered keys: { type: "dim", id, dir } | { type: "val", sig: column signature, dir }
   };
@@ -653,7 +652,7 @@ function reconcile(old, prev) {
   const hidden = old.hidden.filter(id => measures.includes(id));
   const totals = { ...def.totals, ...old.totals, sub: old.totals.sub.filter(id => id === MEAS || dimIds.has(id)) };
   const sort = (Array.isArray(old.sort) ? old.sort : []).filter(k => k.type !== "dim" || dimIds.has(k.id));
-  return { rows, cols, measures, hidden, removed, grouped: old.grouped, expand: !!old.expand, totals, sort };
+  return { rows, cols, measures, hidden, removed, grouped: old.grouped, expand: !!old.expand, open: old.open || def.open, totals, sort };
 }
 
 const visibleMeasures = () => layout.measures.filter(id => !layout.hidden.includes(id) && !isOff(id)).map(id => model.measById.get(id));
@@ -877,9 +876,9 @@ function buildGrid() {
   const canFold = L => foldOn && rowLv[L] !== MEAS && rowLv.slice(L + 1).some(id => id !== MEAS);
   const foldKey = (L, t) => L + ":" + rowLv.slice(0, L + 1)
     .map((id, i) => id + "=" + (id === MEAS ? vis[t[i]].id : model.dims[model.dimPos.get(id)].members[t[i]])).join("|");
-  const anyOpen = [];
+  const anyOpen = [], flip = new Set(layout.open.flip);
   const isOpen = (L, t) => {
-    const o = (L < folds.depth) !== folds.flip.has(foldKey(L, t));
+    const o = (L < layout.open.depth) !== flip.has(foldKey(L, t));
     if (o) anyOpen[L] = true;
     return o;
   };
@@ -1139,7 +1138,7 @@ try { Object.keys(localStorage).filter(k => k.startsWith("pivotgrid:view:")).for
 function cleanLayout(o) {
   if (!o || typeof o !== "object") return null;
   const seen = new Set();
-  const ids = a => (Array.isArray(a) ? a : []).filter(x => typeof x === "string" && !seen.has(x) && seen.add(x)).slice(0, 200);
+  const ids = (a, n = 200) => (Array.isArray(a) ? a : []).filter(x => typeof x === "string" && !seen.has(x) && seen.add(x)).slice(0, n);
   const rows = ids(o.rows), cols = ids(o.cols), removed = ids(o.removed);
   seen.clear();
   const measures = ids(o.measures);
@@ -1149,6 +1148,7 @@ function cleanLayout(o) {
     .filter(k => k && ((k.type === "dim" && typeof k.id === "string") || (k.type === "val" && typeof k.sig === "string")))
     .map(k => ({ ...(k.type === "dim" ? { type: "dim", id: k.id } : { type: "val", sig: k.sig }), dir: k.dir === "desc" ? "desc" : "asc" }));
   return { rows, cols, measures, hidden: ids(o.hidden), removed, grouped: o.grouped !== false, expand: o.expand === true,
+    open: { depth: Math.max(0, Math.min(20, parseInt(o.open && o.open.depth) || 0)), flip: (seen.clear(), ids(o.open && o.open.flip, 1000)) },
     totals: { sub: (seen.clear(), ids(t.sub)), grandRows: !!t.grandRows, grandCols: !!t.grandCols, atEnd: !!t.atEnd }, sort };
 }
 function authorDefault() {
@@ -1258,13 +1258,15 @@ $("btnExpand").onclick = () => layout && commit({ ...structuredClone(layout), ex
 
 // Expand all opens that level and the ones above it; collapse all closes it and the ones below.
 function foldAll(L, open) {
-  folds.depth = open ? Math.max(folds.depth, L + 1) : Math.min(folds.depth, L);
-  for (const k of folds.flip) if (open ? parseInt(k) <= L : parseInt(k) >= L) folds.flip.delete(k);
-  render();
+  const d = layout.open.depth;
+  commit({ ...structuredClone(layout), open: {
+    depth: open ? Math.max(d, L + 1) : Math.min(d, L),
+    flip: layout.open.flip.filter(k => open ? parseInt(k) > L : parseInt(k) < L)
+  } });
 }
 function toggleFold(key) {
-  if (!folds.flip.delete(key)) folds.flip.add(key);
-  render();
+  const f = layout.open.flip;
+  commit({ ...structuredClone(layout), open: { depth: layout.open.depth, flip: f.includes(key) ? f.filter(k => k !== key) : [...f, key] } });
 }
 
 /* ---------- sorting: an ordered list of keys ---------- */
