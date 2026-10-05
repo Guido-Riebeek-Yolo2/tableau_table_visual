@@ -168,6 +168,7 @@ Cases already covered:
 - Viewers can remove a dimension from the grid. Measures whose aggregation isn't SUM, COUNT, MIN or MAX show blank in merged cells until the author-configured rules from section 8.2 exist.
 - The layout lives only in memory and is lost on reload (section 8.4).
 - There is no dark-mode styling, which is fine inside Tableau.
+- **Subscriptions (confirmed by the user, accepted):** Excel subscriptions work but contain Tableau's own export of the sheet's data, i.e. every field on the Marks card, including the Fields tile, at query grain, unpivoted and without the extension's totals or formatting. Image and PDF subscriptions don't render the viz extension. The extension can't influence either; its own Export to Excel button gives the grid as shown. Workaround if needed: a separate native crosstab sheet for subscriptions.
 
 ## 8. Roadmap
 
