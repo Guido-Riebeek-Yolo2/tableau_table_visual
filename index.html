@@ -1087,6 +1087,8 @@ function renderShelves() {
   // LOD helper measures only feed totals, so they stay out of the field list.
   const helpers = new Set(model ? model.measures.flatMap(m => m.rule === "lod" ? m.lods.map(l => model.measures[l.idx].id) : []) : []);
   const availMeas = model ? model.measures.filter(m => !m.off && !helpers.has(m.id) && !layout.measures.includes(m.id)) : [];
+  const byLabel = (a, b) => a.label.localeCompare(b.label, undefined, { numeric: true, sensitivity: "base" });
+  availDims.sort(byLabel); availMeas.sort(byLabel);
   $("side").hidden = !model || !model.dims.length && !model.measures.length;
   $("pillsAvail").innerHTML = [
     ...availDims.map(d => `<span class="pill" tabindex="0" data-drag="${esc(d.id)}" data-kind="dim" data-id="${esc(d.id)}" title="${esc(d.label)}: drag onto Rows or Columns">${esc(d.label)}</span>`),
