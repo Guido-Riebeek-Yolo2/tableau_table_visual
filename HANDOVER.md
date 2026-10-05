@@ -241,6 +241,7 @@ Status: `[ ]` open, `[x]` done. Answers to clarification questions are recorded 
    - The row-label header of each such level has Expand all / Collapse all (expand opens that level and those above it; collapse closes it and those below).
    - Open/closed state is session only: `folds = { depth, flip }` (levels below `depth` open; `flip` holds `"L:field=member|…"` exceptions). Start state: all closed.
    - Excel export and tooltips follow what's shown.
+18. [x] **Field list sorted A to Z**: dimensions first, then measures, each by label (`localeCompare`, numeric, case-insensitive). Shelves keep their grid order.
 
 ### 8.0.1 To explore later: on-demand fields (no query until used)
 
