@@ -243,6 +243,9 @@ Status: `[ ]` open, `[x]` done. Answers to clarification questions are recorded 
    - Open/closed state is part of the layout: `layout.open = { depth, flip }` (levels below `depth` open; `flip` holds `"L:field=member|…"` exceptions, max 1000). So the author's default saves which groups are open; viewers start from that and their changes last only for the session. With no saved state everything starts closed.
    - Excel export and tooltips follow what's shown.
 18. [x] **Field list sorted A to Z**: dimensions first, then measures, each by label (`localeCompare`, numeric, case-insensitive). Shelves keep their grid order.
+19. [x] **Select and copy value cells.** Click selects a cell (click again to deselect), Ctrl/Cmd+click adds or removes, Shift+click selects the rectangle from the last clicked cell (with Ctrl it adds to the selection). Esc or a click on a header clears it; any re-render clears it. State: `picked` (Map "row,col" → td) and `anchor`.
+   - Copy with Ctrl/Cmd+C (a document `copy` listener puts tab-separated text in `clipboardData`; this needs no clipboard permission, so it works in Tableau's frame) or the toolbar **Copy n cells** button that appears while cells are selected (`execCommand("copy")`, then `navigator.clipboard`, else it asks for Ctrl+C).
+   - Copies values as displayed (formatted). Only selected rows and columns are included, in grid order; unselected cells between them are empty. No headers.
 
 ### 8.0.1 To explore later: on-demand fields (no query until used)
 

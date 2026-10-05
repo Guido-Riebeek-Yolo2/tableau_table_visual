@@ -174,6 +174,7 @@
     background: var(--g-grand-bg, #e2edf2); color: var(--g-grand-ink, var(--ink)); font-weight: var(--g-grand-w, 600);
     font-style: var(--g-grand-i, normal); text-decoration: var(--g-grand-u, none);
   }
+  #grid tbody tr > td.sel { background: #cfe3f3; box-shadow: inset 0 0 0 1px #2e7bb8; }
 
   .sort {
     display: inline-flex; align-items: center; justify-content: center; vertical-align: -2px;
@@ -345,6 +346,10 @@
       <span>Totals</span>
       <svg width="9" height="9" viewBox="0 0 12 12" aria-hidden="true"><path d="M2.5 4.5 6 8l3.5-3.5" fill="none" stroke="currentColor" stroke-width="1.6"/></svg>
     </button>
+    <button class="tool" id="btnCopy" hidden title="Copy the selected values (Ctrl+C). Ctrl+click adds cells, Shift+click selects a range, Esc clears.">
+      <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path d="M4 4h6.5v6.5H4zM8 4V1.5H1.5V8H4" fill="none" stroke="currentColor" stroke-width="1.2"/></svg>
+      <span>Copy</span>
+    </button>
     <button class="tool" id="btnExport" title="Download the grid as shown as an Excel file">
       <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path d="M6 1.5v6.5M3.3 5.5 6 8.2l2.7-2.7M1.5 10.5h9" fill="none" stroke="currentColor" stroke-width="1.3"/></svg>
       <span>Export to Excel</span>
@@ -484,6 +489,7 @@ const cmpKey = (a, b) => (typeof a === "number" && typeof b === "number") ? a - 
 let model = null;      // the sheet's data, independent of layout
 let layout = null;     // { rows, cols, measures, hidden, removed, grouped, expand, open, totals: { sub, grandRows, grandCols, atEnd }, sort }
 // layout.open: row groups open with Expand rows on. Levels below `depth` start open; `flip` holds "level:path" exceptions.
+let picked = new Map(), anchor = null;   // selected value cells: "row,col" -> td; anchor = [row, col] for Shift+click
 let worksheet = null;
 let diagLines = [];
 let loadWarning = "";
@@ -1025,6 +1031,7 @@ function render() {
 
   const grid = $("grid");
   grid.innerHTML = h + b;
+  picked = new Map(); anchor = null; updateCopyButton();
   measureSticky();
 
   const blank = vis.filter(m => blanked.has(m.id)).map(m => m.label);
@@ -1398,6 +1405,61 @@ $("grid").addEventListener("mousemove", e => {
 $("grid").addEventListener("mouseleave", hideTip);
 $("gridWrap").addEventListener("scroll", hideTip, { passive: true });
 
+/* ---------- cell selection and copy: click, Ctrl/Cmd+click to add, Shift+click for a range ---------- */
+const cellPos = td => [td.parentElement.sectionRowIndex, [...td.parentElement.children].filter(el => el.tagName === "TD").indexOf(td)];
+const tdAt = (r, c) => { const tr = $("grid").tBodies[0] && $("grid").tBodies[0].rows[r]; return tr ? tr.querySelectorAll("td")[c] : null; };
+function pick(td, on) {
+  const k = cellPos(td).join(",");
+  if (on) picked.set(k, td); else picked.delete(k);
+  td.classList.toggle("sel", on);
+}
+function unpickAll() { picked.forEach(td => td.classList.remove("sel")); picked.clear(); }
+function clearPicks() { unpickAll(); anchor = null; updateCopyButton(); }
+function updateCopyButton() {
+  $("btnCopy").hidden = !picked.size;
+  $("btnCopy").querySelector("span").textContent = picked.size > 1 ? `Copy ${picked.size} cells` : "Copy cell";
+}
+// Ctrl/Shift+mousedown would start the browser's own cell or text selection.
+$("grid").addEventListener("mousedown", e => { if ((e.ctrlKey || e.metaKey || e.shiftKey) && e.target.closest("td")) e.preventDefault(); });
+$("grid").addEventListener("click", e => {
+  const td = e.target.closest("td");
+  if (!td) { if (picked.size && !e.target.closest("button")) clearPicks(); return; }
+  const [r, c] = cellPos(td), key = r + "," + c, add = e.ctrlKey || e.metaKey;
+  if (e.shiftKey && anchor) {
+    if (!add) unpickAll();
+    for (let i = Math.min(anchor[0], r); i <= Math.max(anchor[0], r); i++)
+      for (let j = Math.min(anchor[1], c); j <= Math.max(anchor[1], c); j++) { const el = tdAt(i, j); if (el) pick(el, true); }
+  } else if (add) {
+    pick(td, !picked.has(key));
+    anchor = [r, c];
+  } else {
+    const only = picked.size === 1 && picked.has(key);
+    unpickAll();
+    if (!only) pick(td, true);
+    anchor = [r, c];
+  }
+  updateCopyButton();
+});
+// Selected rows and columns, in grid order, tab-separated; unselected cells in between stay empty.
+function pickedText() {
+  const g = lastGrid, pos = [...picked.keys()].map(k => k.split(",").map(Number));
+  const rows = [...new Set(pos.map(p => p[0]))].sort((a, b) => a - b), cols = [...new Set(pos.map(p => p[1]))].sort((a, b) => a - b);
+  return rows.map(r => cols.map(c => picked.has(r + "," + c)
+    ? g.cell(g.rowItems[r], g.colItems[c]).f.replace(/[\t\r\n]+/g, " ") : "").join("\t")).join("\r\n");
+}
+document.addEventListener("copy", e => {
+  if (!picked.size || !lastGrid || e.target.closest && e.target.closest("input, textarea, select")) return;
+  e.clipboardData.setData("text/plain", pickedText());
+  e.preventDefault();
+});
+$("btnCopy").onclick = async () => {
+  let ok = false;
+  try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
+  if (!ok) try { await navigator.clipboard.writeText(pickedText()); ok = true; } catch (e) { ok = false; }
+  $("btnCopy").querySelector("span").textContent = ok ? "Copied" : "Press Ctrl+C to copy";
+  setTimeout(updateCopyButton, 1500);
+};
+
 /* ---------- totals menu ---------- */
 function renderTotalsMenu() {
   const vis = visibleMeasures(), t = layout.totals;
@@ -1454,6 +1516,7 @@ document.addEventListener("keydown", e => {
     if (!$(menuId).hidden) { toggleMenu(name, false); $(btnId).focus(); }
   }
   if (!$("formatPanel").hidden) closeFormat(false);
+  if (picked.size) clearPicks();
 });
 
 /* ---------- format panel (author only; saved in the workbook's extension settings) ---------- */
