@@ -465,7 +465,8 @@ const DEFAULT_FORMAT = {
   paramMap: {},  // field id -> parameter name that names it; NO_PARAM = don't rename
   measureFormats: {},  // measure id -> { type, decimals, units, prefix, suffix, thousands, negative }; absent = Tableau's format
   dateFormats: {},     // date dimension id -> DATE_FORMATS key; absent = Tableau's format
-  totalRules: {}       // measure id -> { rule, num, den, lods: [{ m, ex: [dim ids] }] }; absent = from the aggregation
+  totalRules: {},      // measure id -> { rule, num, den, lods: [{ m, ex: [dim ids] }] }; absent = from the aggregation
+  totalsOnly: []       // measure ids that only feed total calculations: never on the grid or in the field list
 };
 const NO_PARAM = "__none__";
 const DATE_FORMATS = {
@@ -531,6 +532,7 @@ function applyParams(m) {
     if (!format.paramMap[f.id] && paramCandidates(f.id).length > 1) m.ambiguous.push(f.baseLabel);
     const v = p && p.currentValue ? String(p.currentValue.formattedValue ?? p.currentValue.value ?? "") : null;
     f.param = p ? p.name : null;
+    f.paramValue = p && p.currentValue ? String(p.currentValue.value ?? "") : null;
     f.off = v != null && PARAM_NONE.includes(norm(v));
     f.label = v != null && !f.off ? v : f.baseLabel;
   }
@@ -538,8 +540,23 @@ function applyParams(m) {
 const isOff = id => {
   if (id === MEAS) return false;
   const f = model.dimPos.has(id) ? model.dims[model.dimPos.get(id)] : model.measById.get(id);
-  return !!(f && f.off);
+  return !!(f && (f.off || f.helper));
 };
+// The values of the parameter behind a field, for per-value settings; [] if it has none.
+function paramValues(f) {
+  const p = f.param && params.find(x => x.name === f.param);
+  if (!p) return [];
+  const a = p.allowableValues, cur = p.currentValue;
+  const out = (a && Array.isArray(a.allowableValues) ? a.allowableValues : [])
+    .map(v => ({ v: String(v.value ?? ""), t: String(v.formattedValue ?? v.value ?? "") }));
+  if (cur && !out.some(o => o.v === String(cur.value ?? ""))) out.push({ v: String(cur.value ?? ""), t: String(cur.formattedValue ?? cur.value ?? "") });
+  return out.filter(o => o.v);
+}
+// Settings for one value of a parameter-driven measure are stored under "<measure id> @ <value>".
+const VAL_SEP = " @ ";
+const valKey = (id, v) => v ? id + VAL_SEP + v : id;
+const hasValueKeys = (map, id) => Object.keys(map).some(k => k.startsWith(id + VAL_SEP));
+const settingFor = (map, m) => (m.paramValue && map[valKey(m.id, m.paramValue)]) || map[m.id];
 
 const ruleOf = id => { const m = AGG_RE.exec(String(id).trim()); return (m && COMBINE_RULE[m[1].toUpperCase()]) || "none"; };
 
@@ -1115,7 +1132,7 @@ function renderShelves() {
   const availDims = model ? model.dims.filter(d => !d.off && !layout.rows.includes(d.id) && !layout.cols.includes(d.id)) : [];
   // LOD helper measures only feed totals, so they stay out of the field list.
   const helpers = new Set(model ? model.measures.flatMap(m => m.rule === "lod" ? m.lods.map(l => model.measures[l.idx].id) : []) : []);
-  const availMeas = model ? model.measures.filter(m => !m.off && !helpers.has(m.id) && !layout.measures.includes(m.id)) : [];
+  const availMeas = model ? model.measures.filter(m => !m.off && !m.helper && !helpers.has(m.id) && !layout.measures.includes(m.id)) : [];
   const byLabel = (a, b) => a.label.localeCompare(b.label, undefined, { numeric: true, sensitivity: "base" });
   availDims.sort(byLabel); availMeas.sort(byLabel);
   $("side").hidden = !model || !model.dims.length && !model.measures.length;
@@ -1625,7 +1642,7 @@ async function saveDefaultLayout(clear, quiet) {
 }
 
 /* ---------- import / export of format settings ---------- */
-const NON_STYLE = ["paramMap", "measureFormats", "dateFormats", "totalRules"];
+const NON_STYLE = ["paramMap", "measureFormats", "dateFormats", "totalRules", "totalsOnly"];
 const IO_PARTS = [
   ["style", "Fonts, colours and text styles", true],
   ["numbers", "Number and date formats", true],
@@ -1647,7 +1664,7 @@ function exportSettings() {
   const parts = ioParts(), out = { pivotGridFormat: 1 };
   if (parts.has("style")) out.style = Object.fromEntries(Object.entries(format).filter(([k]) => !NON_STYLE.includes(k)));
   if (parts.has("numbers")) { out.measureFormats = format.measureFormats; out.dateFormats = format.dateFormats; }
-  if (parts.has("totals")) out.totalRules = format.totalRules;
+  if (parts.has("totals")) { out.totalRules = format.totalRules; out.totalsOnly = format.totalsOnly; }
   if (parts.has("params")) out.paramMap = format.paramMap;
   return JSON.stringify(out, null, 2);
 }
@@ -1670,7 +1687,11 @@ function importSettings(text) {
     Object.assign(next.dateFormats, data.dateFormats || {});
     done.push("number and date formats");
   }
-  if (parts.has("totals") && data.totalRules) { Object.assign(next.totalRules, data.totalRules); done.push("total calculations"); }
+  if (parts.has("totals") && (data.totalRules || data.totalsOnly)) {
+    Object.assign(next.totalRules, data.totalRules || {});
+    next.totalsOnly = [...next.totalsOnly, ...(Array.isArray(data.totalsOnly) ? data.totalsOnly : [])];
+    done.push("total calculations");
+  }
   if (parts.has("params") && data.paramMap) { Object.assign(next.paramMap, data.paramMap); done.push("parameter names"); }
   if (!done.length) return ioStatus("Nothing to import: the ticked parts aren't in these settings.", true);
   setFormat(cleanFormat(next, format));
@@ -1679,7 +1700,7 @@ function importSettings(text) {
   // Settings keyed by measure name only apply where this sheet has the same measures.
   const ids = new Set(model ? model.measures.map(m => m.id) : []);
   const keyed = [...Object.keys(data.measureFormats || {}), ...Object.keys(data.totalRules || {})];
-  const missing = keyed.filter(id => !ids.has(id)).length;
+  const missing = keyed.filter(id => !ids.has(id.split(VAL_SEP)[0])).length;
   ioStatus(`Imported ${done.join(", ")}.` + (missing ? ` ${missing} measure setting(s) refer to measures not on this sheet and have no effect here.` : "") +
     " Click Save to keep them.");
 }
@@ -1733,7 +1754,8 @@ function formatDate(ms, pattern) {
 function applyFieldFormats(m) {
   const mIdx = id => m.measures.findIndex(x => x.id === id);
   for (const meas of m.measures) {
-    const t = format.totalRules[meas.id];
+    const t = settingFor(format.totalRules, meas);
+    meas.helper = format.totalsOnly.includes(meas.id);
     meas.ratio = t && t.rule === "ratio" ? [mIdx(t.num), mIdx(t.den)] : null;
     meas.lods = t && t.rule === "lod" ? t.lods.map(l => ({ idx: mIdx(l.m), ex: l.ex.map(id => m.dimPos.get(id)).filter(p => p != null) }))
       .filter(l => l.idx >= 0).map(l => ({ ...l, ex: l.ex.filter(p => m.dims[p].members.length > 1) })) : [];
@@ -1749,7 +1771,7 @@ function applyFieldFormats(m) {
       : t.rule;
   }
   for (const meas of m.measures) {
-    const c = format.measureFormats[meas.id];
+    const c = settingFor(format.measureFormats, meas);
     meas.custom = c ? makeNumberFormat(c) : null;
   }
   for (const d of m.dims) {
@@ -1791,6 +1813,9 @@ function cleanFormat(f, base = DEFAULT_FORMAT) {
             .map(l => ({ m: s(l.m), ex: (Array.isArray(l.ex) ? l.ex : []).filter(x => typeof x === "string").slice(0, 30).map(s) })) };
       }
     }
+    else if (key === "totalsOnly") {
+      out.totalsOnly = Array.isArray(v) ? [...new Set(v.filter(x => typeof x === "string" && x && x.length <= 300))].slice(0, 50) : [];
+    }
     else if (typeof def === "boolean") { if (typeof v === "boolean") out[key] = v; }
     else if (typeof def === "number") { const n = Number(v); if (isFinite(n)) out[key] = Math.min(32, Math.max(8, Math.round(n))); }
     else if (/Bg$|Color$/.test(key)) { if (HEX.test(v)) out[key] = v; }
@@ -1829,7 +1854,7 @@ function applyFormat(f) {
 }
 function setFormat(f) {
   const changed = k => JSON.stringify(f[k]) !== JSON.stringify(format[k]);
-  const mapChanged = changed("paramMap"), fieldsChanged = changed("measureFormats") || changed("dateFormats") || changed("totalRules");
+  const mapChanged = changed("paramMap"), fieldsChanged = changed("measureFormats") || changed("dateFormats") || changed("totalRules") || changed("totalsOnly");
   format = f;
   applyFormat(f);
   updateSummaries();
@@ -1841,20 +1866,34 @@ function setFormat(f) {
 
 let fpMeasure = null;   // measure being edited in the Number formats section
 let fpTotal = null;     // measure being edited in the Total calculations section
+let fpMeasureVal = "", fpTotalVal = "";   // parameter value being edited in those sections; "" = all values
 const TOTAL_RULES = [["sum", "Sum"], ["min", "Minimum"], ["max", "Maximum"], ["ratio", "Ratio of two measures"],
   ["countd", "Count distinct of a field"], ["lod", "From LOD measures"], ["none", "Leave blank"]];
 const AUTO_RULE_TEXT = { sum: "Sum", min: "Minimum", max: "Maximum", none: "blank" };
+// "Applies to" choice for a parameter-driven measure: all values, or one value of the parameter.
+function valueRow(m, cur, attr, map) {
+  const vals = paramValues(m);
+  if (!vals.length) return "";
+  return `<label class="fp-field"><span>Applies to</span><select ${attr}><option value="">All values (default)</option>` +
+    vals.map(o => `<option value="${esc(o.v)}"${o.v === cur ? " selected" : ""}>${esc(o.t +
+      (map[valKey(m.id, o.v)] ? "  \u2022 custom" : "") + (o.v === m.paramValue ? "  (current)" : ""))}</option>`).join("") +
+    `</select></label>`;
+}
 function totalSectionHtml() {
   if (!model || !model.measures.length) return `<div class="fp-hint">No measures on this sheet.</div>`;
   if (!model.measById.has(fpTotal)) fpTotal = (model.measures.find(m => m.rule === "none") || model.measures[0]).id;
-  const m = model.measById.get(fpTotal), t = format.totalRules[fpTotal];
+  const m = model.measById.get(fpTotal);
+  if (!paramValues(m).some(o => o.v === fpTotalVal)) fpTotalVal = "";
+  const t = format.totalRules[valKey(fpTotal, fpTotalVal)], def = format.totalRules[fpTotal];
   const opt = (v, txt, cur) => `<option value="${esc(v)}"${v === cur ? " selected" : ""}>${esc(txt)}</option>`;
   const row = (label, input) => `<label class="fp-field"><span>${label}</span>${input}</label>`;
   const hint = txt => `<div class="fp-hint">${txt}</div>`;
   const measures = cur => opt("", "Choose…", cur) + model.measures.filter(x => x.id !== fpTotal).map(x => opt(x.id, x.label, cur)).join("");
+  const ruleName = r => (TOTAL_RULES.find(x => x[0] === r) || [r, r])[1];
   let html = row("Measure", `<select data-tr-pick>${model.measures.map(x => opt(x.id, x.label +
-      (format.totalRules[x.id] ? "  \u2022 custom" : x.rule === "none" ? "  \u2022 no total" : ""), fpTotal)).join("")}</select>`) +
-    row("Totals use", `<select data-tr="rule">${opt("", `Automatic (${m.autoText})`, t ? t.rule : "")}` +
+      (format.totalRules[x.id] || hasValueKeys(format.totalRules, x.id) ? "  \u2022 custom" : x.rule === "none" ? "  \u2022 no total" : ""), fpTotal)).join("")}</select>`) +
+    valueRow(m, fpTotalVal, "data-tr-val", format.totalRules) +
+    row("Totals use", `<select data-tr="rule">${opt("", fpTotalVal ? `Same as all values (${def ? ruleName(def.rule) : m.autoText})` : `Automatic (${m.autoText})`, t ? t.rule : "")}` +
       TOTAL_RULES.map(([v, txt]) => opt(v, txt, t ? t.rule : "")).join("") + `</select>`);
   if (t && t.rule === "countd") {
     html += row("Counted field", `<select data-tr="dim">${opt("", "Choose…", t.dim)}` +
@@ -1870,7 +1909,8 @@ function totalSectionHtml() {
   if (t && t.rule === "ratio") {
     html += row("Numerator", `<select data-tr="num">${measures(t.num)}</select>`) +
       row("Denominator", `<select data-tr="den">${measures(t.den)}</select>`) +
-      hint("Every total is the sum of the numerator divided by the sum of the denominator, e.g. Margin = GGR Eur ÷ Bet Eur, Avg Bet = Bet Eur ÷ Bet Qty. Both must be summable measures on the sheet (Values or Fields tile).");
+      hint("Every total is the sum of the numerator divided by the sum of the denominator, e.g. Margin = GGR Eur ÷ Bet Eur, Avg Bet = Bet Eur ÷ Bet Qty. " +
+        "Both must be summable measures on the sheet. To keep them off the grid, put them on the Fields tile and tick them under Used for totals only.");
   }
   if (t && t.rule === "lod") {
     const dimName = d => d.baseLabel === d.label ? d.label : `${d.baseLabel} (${d.label})`;
@@ -1884,22 +1924,33 @@ function totalSectionHtml() {
         "<code>MIN({EXCLUDE [Grid Level 1] : COUNTD([Operator])})</code> to the Fields tile and tick the fields it excludes. " +
         "For the grand total, exclude every grid field. Totals with no matching LOD measure stay blank.");
   }
+  const helperable = model.measures.filter(x => x.axis === "fields" || format.totalsOnly.includes(x.id));
+  if (helperable.length) {
+    html += `<div class="fp-sub">Used for totals only</div>` + helperable.map(x =>
+        `<label class="fp-check"><input type="checkbox" data-to value="${esc(x.id)}"${format.totalsOnly.includes(x.id) ? " checked" : ""}> ${esc(x.label)}</label>`).join("") +
+      hint("Ticked measures never show on the grid or in the field list. Use them as the numerator and denominator of a ratio.");
+  }
   return html;
 }
-function previewText(m) {
-  const f = m.custom || m.fmt, v = m.sample ?? 1234567.891;
-  return `Example: ${f(Math.abs(v))}  /  ${f(-Math.abs(v))}` + (m.custom ? "" : "  (Tableau's format)");
+function previewText(m, key) {
+  const c = format.measureFormats[key] || format.measureFormats[m.id];
+  const f = c ? makeNumberFormat(c) : m.fmt, v = m.sample ?? 1234567.891;
+  return `Example: ${f(Math.abs(v))}  /  ${f(-Math.abs(v))}` + (c ? "" : "  (Tableau's format)");
 }
 function measureSectionHtml() {
   if (!model || !model.measures.length) return `<div class="fp-hint">No measures on this sheet.</div>`;
   if (!model.measById.has(fpMeasure)) fpMeasure = model.measures[0].id;
-  const m = model.measById.get(fpMeasure), saved = format.measureFormats[fpMeasure];
-  const c = { ...NUMBER_DEFAULT, ...saved }, off = saved ? "" : " disabled";
+  const m = model.measById.get(fpMeasure);
+  if (!paramValues(m).some(o => o.v === fpMeasureVal)) fpMeasureVal = "";
+  const key = valKey(fpMeasure, fpMeasureVal), saved = format.measureFormats[key];
+  const def = fpMeasureVal ? format.measureFormats[fpMeasure] : null;
+  const c = { ...NUMBER_DEFAULT, ...(saved || def) }, off = saved ? "" : " disabled";
   const opt = (v, t, cur) => `<option value="${esc(v)}"${v === cur ? " selected" : ""}>${esc(t)}</option>`;
   const row = (label, input) => `<label class="fp-field"><span>${label}</span>${input}</label>`;
   return row("Measure", `<select data-mf-pick>${model.measures.map(x =>
-      opt(x.id, x.label + (format.measureFormats[x.id] ? "  \u2022 custom" : ""), fpMeasure)).join("")}</select>`) +
-    row("Format", `<select data-mf="type">${opt("auto", "Automatic (Tableau)", saved ? c.type : "auto")}` +
+      opt(x.id, x.label + (format.measureFormats[x.id] || hasValueKeys(format.measureFormats, x.id) ? "  \u2022 custom" : ""), fpMeasure)).join("")}</select>`) +
+    valueRow(m, fpMeasureVal, "data-mf-val", format.measureFormats) +
+    row("Format", `<select data-mf="type">${opt("auto", fpMeasureVal ? `Same as all values (${def ? "custom" : "Tableau"})` : "Automatic (Tableau)", saved ? c.type : "auto")}` +
       `${opt("number", "Number", saved ? c.type : "")}${opt("percent", "Percentage", saved ? c.type : "")}</select>`) +
     row("Decimal places", `<input type="number" min="0" max="10" data-mf="decimals" value="${c.decimals}"${off}>`) +
     row("Display units", `<select data-mf="units"${off || (c.type === "percent" ? " disabled" : "")}>` +
@@ -1908,7 +1959,7 @@ function measureSectionHtml() {
     row("Suffix", `<input type="text" data-mf="suffix" maxlength="12" value="${esc(c.suffix)}"${off}>`) +
     row("Thousands separator", `<input type="checkbox" data-mf="thousands"${c.thousands ? " checked" : ""}${off}>`) +
     row("Negative values", `<select data-mf="negative"${off}>${opt("minus", "-1234", c.negative)}${opt("paren", "(1234)", c.negative)}</select>`) +
-    `<div class="fp-hint" id="fpPreview">${esc(previewText(m))}</div>`;
+    `<div class="fp-hint" id="fpPreview">${esc(previewText(m, key))}</div>`;
 }
 function dateSectionHtml() {
   const dates = model ? model.dims.filter(d => d.isDate) : [];
@@ -2002,13 +2053,14 @@ async function closeFormat(save) {
 $("fpBody").addEventListener("input", e => {
   const el = e.target, key = el.dataset.k;
   if (el.matches("[data-mf-pick]")) { fpMeasure = el.value; $("fpMeasures").innerHTML = measureSectionHtml(); return; }
+  if (el.matches("[data-mf-val]")) { fpMeasureVal = el.value; $("fpMeasures").innerHTML = measureSectionHtml(); return; }
   if (el.dataset.mf) {
-    const mf = { ...format.measureFormats }, k = el.dataset.mf;
-    if (k === "type" && el.value === "auto") delete mf[fpMeasure];
-    else mf[fpMeasure] = cleanNumberFormat({ ...NUMBER_DEFAULT, ...mf[fpMeasure], [k]: el.type === "checkbox" ? el.checked : el.value });
+    const mf = { ...format.measureFormats }, k = el.dataset.mf, key = valKey(fpMeasure, fpMeasureVal);
+    if (k === "type" && el.value === "auto") delete mf[key];
+    else mf[key] = cleanNumberFormat({ ...NUMBER_DEFAULT, ...(mf[key] || mf[fpMeasure]), [k]: el.type === "checkbox" ? el.checked : el.value });
     setFormat(cleanFormat({ ...format, measureFormats: mf }));
     if (k === "type") $("fpMeasures").innerHTML = measureSectionHtml();
-    else $("fpPreview").textContent = previewText(model.measById.get(fpMeasure));
+    else $("fpPreview").textContent = previewText(model.measById.get(fpMeasure), key);
     return;
   }
   if (el.dataset.df != null) {
@@ -2018,13 +2070,20 @@ $("fpBody").addEventListener("input", e => {
     return;
   }
   if (el.matches("[data-tr-pick]")) { fpTotal = el.value; $("fpTotals").innerHTML = totalSectionHtml(); return; }
+  if (el.matches("[data-tr-val]")) { fpTotalVal = el.value; $("fpTotals").innerHTML = totalSectionHtml(); return; }
+  if (el.matches("[data-to]")) {
+    const list = format.totalsOnly.filter(x => x !== el.value);
+    setFormat(cleanFormat({ ...format, totalsOnly: el.checked ? [...list, el.value] : list }));
+    return;
+  }
   if (el.dataset.tr || el.dataset.tlM != null || el.dataset.tlEx != null) {
-    const tr = structuredClone(format.totalRules), cur = tr[fpTotal] || { rule: "", num: "", den: "", lods: [] };
+    const key = valKey(fpTotal, fpTotalVal);
+    const tr = structuredClone(format.totalRules), cur = tr[key] || { rule: "", num: "", den: "", lods: [] };
     if (el.dataset.tr === "rule") {
-      if (!el.value) delete tr[fpTotal];
-      else tr[fpTotal] = { ...cur, rule: el.value, lods: el.value === "lod" && !cur.lods.length ? [{ m: "", ex: [] }] : cur.lods };
+      if (!el.value) delete tr[key];
+      else tr[key] = { ...cur, rule: el.value, lods: el.value === "lod" && !cur.lods.length ? [{ m: "", ex: [] }] : cur.lods };
     }
-    else if (el.dataset.tr) tr[fpTotal] = { ...cur, [el.dataset.tr]: el.value };
+    else if (el.dataset.tr) tr[key] = { ...cur, [el.dataset.tr]: el.value };
     else if (el.dataset.tlM != null) cur.lods[+el.dataset.tlM].m = el.value;
     else {
       const l = cur.lods[+el.dataset.tlEx];
@@ -2075,7 +2134,7 @@ $("formatPanel").addEventListener("click", async e => {
   }
   const lod = e.target.closest("[data-tl-add], [data-tl-del]");
   if (lod) {
-    const tr = structuredClone(format.totalRules), t = tr[fpTotal];
+    const tr = structuredClone(format.totalRules), t = tr[valKey(fpTotal, fpTotalVal)];
     if (lod.dataset.tlDel != null) t.lods.splice(+lod.dataset.tlDel, 1); else t.lods.push({ m: "", ex: [] });
     setFormat(cleanFormat({ ...format, totalRules: tr }));
     $("fpTotals").innerHTML = totalSectionHtml();
@@ -2447,7 +2506,7 @@ async function loadParams() {
     watchedParams.add(p.id || p.name);
     p.addEventListener(tableau.TableauEventType.ParameterChanged, async () => {
       await loadParams();
-      if (model) { applyParams(model); render(); }
+      if (model) { applyParams(model); applyFieldFormats(model); render(); }
     });
   }
 }
@@ -2468,6 +2527,7 @@ function demoData() {
   const rnd = () => { seed |= 0; seed = seed + 0x6D2B79F5 | 0; let t = Math.imul(seed ^ seed >>> 15, 1 | seed);
     t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; };
   const fmt = new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 });
+  const fmt2 = new Intl.NumberFormat("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   const suppliers = ["1x2Network", "3Oaks", "7rings", "100HP Gaming", "155.io", "7777Gaming", "A Live", "AccaMAX",
     "Alea", "Amusnet", "Animo", "Apparat Gaming", "AvatarUX", "Aviatrix", "Barbara Bang", "Belatra", "Betsoft",
     "BGaming", "Big Daddy", "Booming Games", "Bragg Gaming", "BulBul", "Caleta Gaming", "Endorphina", "Evolution",
@@ -2485,7 +2545,8 @@ function demoData() {
         const bonusBet = rnd() < .35 ? bet * rnd() * .01 : 0;
         const bonusWin = bonusBet * (.6 + rnd() * .8);
         const n = v => ({ f: fmt.format(v), s: v });
-        data.push([{ f: s, s }, { f: p, s: p }, { f: String(y), s: y }, n(bet), n(qty), n(bonusBet), n(bonusWin)]);
+        data.push([{ f: s, s }, { f: p, s: p }, { f: String(y), s: y }, n(bet), n(qty), n(bonusBet), n(bonusWin),
+          { f: fmt2.format(bet / qty), s: bet / qty }]);
       }
     }
   }
@@ -2499,7 +2560,8 @@ function demoData() {
       { id: "SUM(Bet Eur)", label: "Bet Eur", col: 3, axis: "values" },
       { id: "SUM(Bet Qty)", label: "Bet Qty", col: 4, axis: "values" },
       { id: "SUM(Bonus Bet Eur)", label: "Bonus Bet Eur", col: 5, axis: "values" },
-      { id: "SUM(Bonus Win Eur)", label: "Bonus Win Eur", col: 6, axis: "fields" }
+      { id: "SUM(Bonus Win Eur)", label: "Bonus Win Eur", col: 6, axis: "fields" },
+      { id: "AGG(Kp.06 Metric Selector)", label: "Kp.06 Metric Selector", col: 7, axis: "values" }
     ],
     data
   };
@@ -2510,7 +2572,13 @@ function startDemo(reason, isError) {
   diagLines = ["MODE\n  Demo data"];
   format = cleanFormat(readJSON(store.get("format")) || {});
   applyFormat(format);
-  setModel(buildModel(demoData()));
+  // Set to Avg Bet Eur (= Bet Eur / Bet Qty), so per-value totals and formats can be tried locally.
+  params = [{ name: "Kp.06 Metric Selector (P)", currentValue: { value: 7, formattedValue: "Avg Bet Eur" },
+    allowableValues: { type: "list", allowableValues: ["First Time Actives", "Daily Actives", "Daily Game Actives", "Monthly Actives",
+      "Apgms", "Bet Eur", "Avg Bet Eur", "GGR Eur", "Round Qty", "Net Revenue Eur"].map((t, i) => ({ value: i + 1, formattedValue: t })) } }];
+  const m = buildModel(demoData());
+  applyParams(m);
+  setModel(m);
 }
 
 function diag() {
