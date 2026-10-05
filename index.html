@@ -1453,12 +1453,25 @@ document.addEventListener("copy", e => {
   e.preventDefault();
 });
 $("btnCopy").onclick = async () => {
-  let ok = false;
-  try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
-  if (!ok) try { await navigator.clipboard.writeText(pickedText()); ok = true; } catch (e) { ok = false; }
+  const ok = await copyPicked();
   $("btnCopy").querySelector("span").textContent = ok ? "Copied" : "Press Ctrl+C to copy";
   setTimeout(updateCopyButton, 1500);
 };
+async function copyPicked() {
+  let ok = false;
+  try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
+  if (!ok) try { await navigator.clipboard.writeText(pickedText()); ok = true; } catch (e) { ok = false; }
+  return ok;
+}
+// Tableau Desktop handles Ctrl+C itself and copies the whole sheet; write the selection again after it.
+const isDesktop = () => tableauReady && tableau.extensions.environment.context === "desktop";
+document.addEventListener("keydown", e => {
+  if (!picked.size || !isDesktop() || !(e.ctrlKey || e.metaKey) || e.key.toLowerCase() !== "c") return;
+  if (e.target.closest && e.target.closest("input, textarea, select")) return;
+  [150, 500, 1000].forEach(ms => setTimeout(copyPicked, ms));
+  $("btnCopy").querySelector("span").textContent = "Copied";
+  setTimeout(updateCopyButton, 1500);
+});
 
 /* ---------- totals menu ---------- */
 function renderTotalsMenu() {

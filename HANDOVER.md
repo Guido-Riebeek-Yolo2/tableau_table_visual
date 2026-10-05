@@ -246,6 +246,7 @@ Status: `[ ]` open, `[x]` done. Answers to clarification questions are recorded 
 19. [x] **Select and copy value cells.** Click selects a cell (click again to deselect), Ctrl/Cmd+click adds or removes, Shift+click selects the rectangle from the last clicked cell (with Ctrl it adds to the selection). Esc or a click on a header clears it; any re-render clears it. State: `picked` (Map "row,col" → td) and `anchor`.
    - Copy with Ctrl/Cmd+C (a document `copy` listener puts tab-separated text in `clipboardData`; this needs no clipboard permission, so it works in Tableau's frame) or the toolbar **Copy n cells** button that appears while cells are selected (`execCommand("copy")`, then `navigator.clipboard`, else it asks for Ctrl+C).
    - Copies values as displayed (formatted). Only selected rows and columns are included, in grid order; unselected cells between them are empty. No headers.
+   - **Tableau Desktop** (user-tested): Ctrl+C is handled by Desktop itself and copies the whole sheet; the Copy button works. Workaround in place: when `environment.context === "desktop"`, a Ctrl+C keydown that reaches the extension re-copies the selection after 150/500/1000 ms to overwrite Desktop's copy. Unverified; if it doesn't help, the Copy button is the Desktop route. Cloud: Ctrl+C works.
 
 ### 8.0.1 To explore later: on-demand fields (no query until used)
 
