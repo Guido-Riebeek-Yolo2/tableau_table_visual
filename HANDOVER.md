@@ -236,6 +236,11 @@ Status: `[ ]` open, `[x]` done. Answers to clarification questions are recorded 
    - `store` wraps settings: workbook settings once Tableau is connected (`tableauReady`), localStorage in the local preview so reload behaviour can be tested.
    - Measures struck through by a click (`layout.hidden`) are session-only: `persistable()` drops them from every saved layout (author and viewer) and from the Reset layout comparison.
    - Settings reset only when the extension is removed and re-added (a new instance); export/import formatting first. Option 3 (Custom Views via a hidden parameter) is still open in 8.4.
+17. [x] **Expand rows (accordion).** Toolbar toggle `#btnExpand`, `layout.expand` (default off, saved with the layout like Group rows). Works only with Group rows on and 2+ row dimensions; otherwise a notice says so.
+   - Every row dimension with another dimension after it gets a +/− box. A closed group is one row per measure (`fold: L` items from `axisItems`, computed like a subtotal but without the Total label; inner levels blank). Subtotals at that level only show when the group is open. Totals rules apply, so "Leave blank" measures are blank on closed rows.
+   - The row-label header of each such level has Expand all / Collapse all (expand opens that level and those above it; collapse closes it and those below).
+   - Open/closed state is session only: `folds = { depth, flip }` (levels below `depth` open; `flip` holds `"L:field=member|…"` exceptions). Start state: all closed.
+   - Excel export and tooltips follow what's shown.
 
 ### 8.0.1 To explore later: on-demand fields (no query until used)
 
