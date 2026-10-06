@@ -738,8 +738,40 @@ function axisTuples(levels, vis) {
 // dims not listed are aggregated over, which is how totals are computed.
 // A value covering one row of data is Tableau's own cell; several rows are combined.
 const EMPTY = { f: "", s: null };
-let views = new Map(), blanked = new Set();
+let views = new Map(), blanked = new Set(), comparisonAxes = new Map(), comparisonCells = new Map();
+const isComparison = rule => rule === "difference" || rule === "percentDifference";
+function comparisonAt(fixed, mIdx) {
+  const meas = model.measures[mIdx], cfg = meas.comparison;
+  const axis = cfg && comparisonAxes.get(cfg.pos);
+  const sourceMeasure = cfg && model.measures[cfg.idx];
+  if (!axis || !sourceMeasure || !["sum", "min", "max", "ratio", "countd"].includes(sourceMeasure.rule)) {
+    blanked.add(meas.id); return EMPTY;
+  }
+  const current = fixed.find(([pos]) => pos === cfg.pos);
+  if (!current) return EMPTY;
+  const key = mIdx + "|" + fixed.map(pair => pair.join(":")).join(",");
+  if (comparisonCells.has(key)) return comparisonCells.get(key);
+  const parents = fixed.filter(([pos]) => axis.parents.includes(pos));
+  const partition = parents.map(pair => pair.join(":")).join(",");
+  let members = axis.members.get(partition);
+  if (!members) {
+    members = [...new Set(model.records.filter(record => parents.every(([pos, member]) => record.k[pos] === member))
+      .map(record => record.k[cfg.pos]))].sort((first, second) => axis.desc ? second - first : first - second);
+    axis.members.set(partition, members);
+  }
+  const at = members.indexOf(current[1]), adjacent = at + cfg.offset;
+  if (at < 0 || adjacent < 0 || adjacent >= members.length) return EMPTY;
+  const target = fixed.map(([pos, member]) => [pos, pos === cfg.pos ? members[adjacent] : member]);
+  const source = cellAt(fixed, cfg.idx), comparison = cellAt(target, cfg.idx);
+  const difference = (numOrNull(source) ?? 0) - (numOrNull(comparison) ?? 0);
+  const denominator = Math.abs(numOrNull(comparison) ?? 0);
+  const result = meas.rule === "percentDifference" ? denominator ? difference / denominator : null : difference;
+  const cell = result == null || !isFinite(result) ? EMPTY : { f: meas.fmt(result), s: result };
+  comparisonCells.set(key, cell);
+  return cell;
+}
 function cellAt(fixed, mIdx) {
+  if (isComparison(model.measures[mIdx].rule)) return comparisonAt(fixed, mIdx);
   const mask = fixed.map(f => f[0]).join(",");
   let v = views.get(mask);
   if (!v) {
@@ -840,9 +872,12 @@ function axisItems(levels, vis, opt) {
 
 /* Everything the screen and the export need, from the current layout. */
 function buildGrid() {
-  views = new Map(); blanked = new Set();
+  views = new Map(); blanked = new Set(); comparisonCells = new Map();
   const vis = visibleMeasures();
   const rowLv = activeLevels(layout.rows, vis), colLv = activeLevels(layout.cols, vis);
+  comparisonAxes = new Map([rowLv, colLv].flatMap(levels => levels.flatMap((id, level) => id === MEAS ? [] :
+    [[model.dimPos.get(id), { parents: levels.slice(0, level).filter(parent => parent !== MEAS).map(parent => model.dimPos.get(parent)),
+      desc: layout.sort.some(key => key.type === "dim" && key.id === id && key.dir === "desc"), members: new Map() }]])));
   const rMeasAt = rowLv.indexOf(MEAS), cMeasAt = colLv.indexOf(MEAS);
   const selected = Array.isArray(layout.totals.measures) ? new Set(layout.totals.measures) : null;
   const includeMeasure = mi => !selected || selected.has(vis[mi]?.id);
@@ -1791,6 +1826,7 @@ function applyFieldFormats(m) {
     const t = settingFor(format.totalRules, meas);
     meas.helper = format.totalsOnly.includes(meas.id);
     meas.ratio = t && t.rule === "ratio" ? [mIdx(t.num), mIdx(t.den)] : null;
+    meas.comparison = t && isComparison(t.rule) ? { idx: mIdx(t.source), pos: m.dimPos.get(t.dim), offset: t.offset } : null;
     meas.lods = t && t.rule === "lod" ? t.lods.map(l => ({ idx: mIdx(l.m), ex: l.ex.map(id => m.dimPos.get(id)).filter(p => p != null) }))
       .filter(l => l.idx >= 0).map(l => ({ ...l, ex: l.ex.filter(p => m.dims[p].members.length > 1) })) : [];
     // CNTD(X) totals itself when X is in the data; otherwise the author picks the counted field.
@@ -1842,7 +1878,9 @@ function cleanFormat(f, base = DEFAULT_FORMAT) {
       const s = x => typeof x === "string" ? x.slice(0, 300) : "";
       if (v && typeof v === "object") for (const [id, t] of Object.entries(v)) {
         if (!t || typeof t !== "object" || id.length > 300 || !TOTAL_RULES.some(r => r[0] === t.rule)) continue;
+        const offset = Number(t.offset);
         out.totalRules[id] = { rule: t.rule, num: s(t.num), den: s(t.den), dim: s(t.dim),
+          ...(isComparison(t.rule) ? { source: s(t.source), offset: isFinite(offset) ? Math.max(-1000, Math.min(1000, Math.trunc(offset))) || 1 : 1 } : {}),
           lods: (Array.isArray(t.lods) ? t.lods : []).slice(0, 12).filter(l => l && typeof l === "object")
             .map(l => ({ m: s(l.m), ex: (Array.isArray(l.ex) ? l.ex : []).filter(x => typeof x === "string").slice(0, 30).map(s) })) };
       }
@@ -1902,6 +1940,7 @@ let fpMeasure = null;   // measure being edited in the Number formats section
 let fpTotal = null;     // measure being edited in the Total calculations section
 let fpMeasureVal = "", fpTotalVal = "";   // parameter value being edited in those sections; "" = all values
 const TOTAL_RULES = [["sum", "Sum"], ["min", "Minimum"], ["max", "Maximum"], ["ratio", "Ratio of two measures"],
+  ["difference", "Difference from adjacent period"], ["percentDifference", "Percentage difference from adjacent period"],
   ["countd", "Count distinct of a field"], ["lod", "From LOD measures"], ["none", "Leave blank"]];
 const AUTO_RULE_TEXT = { sum: "Sum", min: "Minimum", max: "Maximum", none: "blank" };
 // "Applies to" choice for a parameter-driven measure: all values, or one value of the parameter.
@@ -1929,6 +1968,15 @@ function totalSectionHtml() {
     valueRow(m, fpTotalVal, "data-tr-val", format.totalRules) +
     row("Totals use", `<select data-tr="rule">${opt("", fpTotalVal ? `Same as all values (${def ? ruleName(def.rule) : m.autoText})` : `Automatic (${m.autoText})`, t ? t.rule : "")}` +
       TOTAL_RULES.map(([v, txt]) => opt(v, txt, t ? t.rule : "")).join("") + `</select>`);
+  if (t && isComparison(t.rule)) {
+    html += row("Source measure", `<select data-tr="source">${opt("", "Choose...", t.source)}` +
+      model.measures.filter(source => source.id !== fpTotal && ["sum", "min", "max", "ratio", "countd"].includes(source.rule))
+        .map(source => opt(source.id, source.label, t.source)).join("") + `</select>`) +
+      row("Across", `<select data-tr="dim">${opt("", "Choose...", t.dim)}` +
+        model.dims.map(dim => opt(dim.id, dim.label, t.dim)).join("") + `</select>`) +
+      row("Offset", `<input type="number" data-tr="offset" min="-1000" max="1000" step="1" value="${t.offset ?? 1}" ` +
+        `title="Positive: next member; negative: previous member, using the field's sort order">`);
+  }
   if (t && t.rule === "countd") {
     html += row("Counted field", `<select data-tr="dim">${opt("", "Choose…", t.dim)}` +
       model.dims.map(d => opt(d.id, d.baseLabel === d.label ? d.label : `${d.baseLabel} (${d.label})`, t.dim)).join("") + `</select>`);

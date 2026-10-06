@@ -309,6 +309,8 @@ Values on the grid come straight from Tableau when a cell matches one row of Tab
 
 Each measure has a **total rule** that says how to combine those rows. If the rule can't give the right answer, the cell stays blank and a notice names the measure. The extension never shows a total it knows may be wrong.
 
+The adjacent-period difference rules are an exception: they recalculate every displayed cell from a source measure, including deepest-level cells, instead of using Tableau's precomputed table calculation.
+
 ### Automatic rules
 
 Without a setting, the rule comes from the field's aggregation:
@@ -331,6 +333,8 @@ Format panel › **Total calculations** › choose the **Measure** › **Totals 
 | **Sum** | Adds the values. | Additive measures, including AGG calculations that are additive. |
 | **Minimum / Maximum** | Smallest / largest value. | MIN/MAX measures. |
 | **Ratio of two measures** | Sum of the numerator ÷ sum of the denominator over the rows covered. | Averages and ratios: Avg Bet = Bet Eur ÷ Bet Qty, Margin = GGR Eur ÷ Bet Eur, Hold %. |
+| **Difference from adjacent period** | Source at the current member minus source at the member selected by the offset, aggregated at the same displayed level. | Month-to-month Bet Eur or GGR Eur differences, including collapsed rows and totals. |
+| **Percentage difference from adjacent period** | Difference divided by the absolute comparison value. Blank when that value is zero. | Percentage changes recalculated at each displayed level, not added from child rows. |
 | **Count distinct of a field** | The number of distinct values of a chosen field among the rows covered (where the measure isn't zero). | Distinct counts such as number of operators. |
 | **From LOD measures** | Takes the value from a helper LOD measure that Tableau calculated for that total level. | Non-additive measures when Count distinct isn't practical. |
 | **Leave blank** | Always blank. | Measures that should never be totalled. |
@@ -342,6 +346,7 @@ Measures can't use themselves as numerator or denominator, and both must be on t
 Ratio, Count distinct and LOD rules need extra fields in Tableau's data:
 
 - **Ratio:** the numerator and denominator measures (e.g. Bet Eur, Bet Qty).
+- **Adjacent-period differences:** the source measure (e.g. Bet Eur). It can also remain visible on Values. Its calculation must be Sum, Minimum, Maximum, Ratio or Count distinct, not another period comparison or an LOD/blank rule.
 - **Count distinct:** the counted dimension (e.g. Operator).
 - **LOD:** the LOD helper measures.
 
@@ -432,7 +437,7 @@ Example: rows are Operator › Brand, and the viewer drags Brand to the field li
 - Ratios with a Ratio rule: recalculated correctly.
 - Measures with no rule (AVG, COUNTD without its field, AGG calculations): blank, with a notice. Set a total rule to fix this.
 
-Moving a field between Rows and Columns never needs combining; values always come straight from Tableau.
+Moving a field between Rows and Columns never needs combining. Ordinary values come straight from Tableau; adjacent-period difference rules continue to calculate from their source measure.
 
 ### 8.6 Parameter-driven grid levels
 
@@ -450,6 +455,24 @@ Set up one sheet, then Format panel › Import / export › tick Fonts and Numbe
 ### 8.8 Different decimals for one view
 
 Use the toolbar's decimals buttons. The author's choice is saved with the layout; a viewer's choice lasts for the session. For permanent per-measure decimals use Number formats.
+
+### 8.9 Month-to-month differences at every row level
+
+Example Tableau calculation: `ZN(SUM([Bet Eur])) - LOOKUP(ZN(SUM([Bet Eur])), 1)`. Tableau calculates it at the worksheet's grain and does not know when a viewer collapses Brand into Operator inside the extension.
+
+1. Keep **Bet Eur** and the output measure **Bet Eur Diff** on the sheet. Bet Eur can be visible on Values or hidden on Fields; the output may be your existing table calculation or an appropriately named numeric placeholder calculation.
+2. Open Format panel > **Total calculations** > Measure **Bet Eur Diff**.
+3. Set **Totals use** to **Difference from adjacent period**.
+4. Set **Source measure** to **Bet Eur**, **Across** to **Calendar Month**, and **Offset** to **1**.
+5. Save the format, then save and publish the workbook.
+
+For **Bet Eur Diff%**, use **Percentage difference from adjacent period** with the same source, field and offset. Set its Number format to **Percentage** if Tableau's existing formatting is not already a percentage. Repeat for GGR Eur using **GGR Eur** as the source.
+
+Offsets count members in the comparison field's ascending or descending field-sort order, not raw date intervals. With months newest-first, +1 compares October against September; -1 compares against the preceding displayed member. Sorting rows by values does not change this comparison order. Parent fields before the comparison field on its axis define partitions: Year > Month restarts the comparison within each year.
+
+The extension aggregates the source at the current row level for both periods, then subtracts. Missing/null source values for an existing comparison member are zero, so a missing Brand month does not skip to an older month when Calendar Month is on columns. A field member absent from the entire partition is not available for comparison; this does not create missing calendar months or retrieve dates filtered out of Tableau.
+
+No adjacent member, a zero percentage denominator, an unsupported source, or a comparison field removed from the grid produces a blank. A total that aggregates away Calendar Month is also blank: there is no individual month to compare. Row grand totals that retain a specific Calendar Month are recalculated correctly. These rules apply equally to deepest rows, collapsed groups, subtotals, sorting, tooltips, copy and Excel export, and support per-parameter-value settings and format import/export.
 
 ---
 
