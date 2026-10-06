@@ -108,6 +108,10 @@
   #totalsMenu label { white-space: normal; overflow-wrap: anywhere; }
   .total-option { display: grid; grid-template-columns: minmax(0, 1fr) 76px; align-items: center; padding-right: 12px; }
   .total-option select { width: 100%; min-width: 0; font: inherit; color: var(--ink); }
+  .total-metrics { display: grid; grid-template-columns: minmax(0, 1fr) 42px 56px; align-items: center; gap: 4px; padding: 3px 12px; }
+  .total-metrics > span:first-child { overflow-wrap: anywhere; }
+  .total-metrics > span:not(:first-child) { text-align: center; }
+  #totalsMenu .total-metrics label { justify-content: center; padding: 3px 0; }
 
   #notice { flex: none; padding: 5px 10px; background: #f2f7fa; color: var(--ink-2); border-bottom: 1px solid var(--line); }
   #notice:empty { display: none; }
@@ -669,7 +673,7 @@ function defaultLayout() {
   return {
     rows, cols, measures: model.measures.filter(m => m.axis !== "fields").map(m => m.id), hidden: [], removed: [],
     grouped: true, expand: false, open: { depth: 0, flip: [] }, dec: 0,
-    totals: { sub: [], grandRows: false, grandCols: false, atEnd: false, positions: {}, measures: null },  // sub: field ids with subtotals, on whichever axis
+    totals: { sub: [], grandRows: false, grandCols: false, atEnd: false, positions: {}, measures: { rows: null, cols: null } },  // sub: field ids with subtotals, on whichever axis
     sort: []     // ordered keys: { type: "dim", id, dir } | { type: "val", sig: column signature, dir }
   };
 }
@@ -697,7 +701,7 @@ function reconcile(old, prev) {
   const totals = { ...def.totals, ...old.totals, sub: old.totals.sub.filter(id => id === MEAS || dimIds.has(id)),
     positions: Object.fromEntries(Object.entries(old.totals.positions || {}).filter(([id]) =>
       id === "grandRows" || id === "grandCols" || id === MEAS || dimIds.has(id))),
-    measures: Array.isArray(old.totals.measures) ? old.totals.measures.filter(id => model.measById.has(id)) : null };
+    measures: Object.fromEntries(["rows", "cols"].map(axis => [axis, totalMeasures(old.totals, axis)?.filter(id => model.measById.has(id)) ?? null])) };
   const sort = (Array.isArray(old.sort) ? old.sort : []).filter(k => k.type !== "dim" || dimIds.has(k.id));
   return { rows, cols, measures, hidden, removed, grouped: old.grouped, expand: !!old.expand, open: old.open || def.open, dec: old.dec || 0, totals, sort };
 }
@@ -707,6 +711,8 @@ const activeLevels = (list, vis) => list.filter(id => id === MEAS ? vis.length >
 const levelName = id => id === MEAS ? "Measure Names" : model.dims[model.dimPos.get(id)].label;
 const totalAtEnd = key => (layout.totals.positions || {})[key] === "end" ||
   (!(key in (layout.totals.positions || {})) && layout.totals.atEnd);
+const totalMeasures = (totals, axis) => Array.isArray(totals.measures) ? totals.measures :
+  Array.isArray(totals.measures?.[axis]) ? totals.measures[axis] : null;
 
 /* ============================================================
    PIVOT
@@ -879,9 +885,12 @@ function buildGrid() {
     [[model.dimPos.get(id), { parents: levels.slice(0, level).filter(parent => parent !== MEAS).map(parent => model.dimPos.get(parent)),
       desc: layout.sort.some(key => key.type === "dim" && key.id === id && key.dir === "desc"), members: new Map() }]])));
   const rMeasAt = rowLv.indexOf(MEAS), cMeasAt = colLv.indexOf(MEAS);
-  const selected = Array.isArray(layout.totals.measures) ? new Set(layout.totals.measures) : null;
-  const includeMeasure = mi => !selected || selected.has(vis[mi]?.id);
-  const hasMeasures = vis.some((_, mi) => includeMeasure(mi));
+  const selected = Object.fromEntries(["rows", "cols"].map(axis => {
+    const ids = totalMeasures(layout.totals, axis);
+    return [axis, ids ? new Set(ids) : null];
+  }));
+  const includeMeasure = (axis, mi) => !selected[axis] || selected[axis].has(vis[mi]?.id);
+  const hasMeasures = axis => vis.some((_, mi) => includeMeasure(axis, mi));
   const label = (id, idx) => {
     if (id === MEAS) return vis[idx].label;
     const d = model.dims[model.dimPos.get(id)];
@@ -897,7 +906,7 @@ function buildGrid() {
 
   const colItems = axisItems(colLv, vis, {
     sub: subOf(colLv), grand: layout.totals.grandCols, atEnd: L => totalAtEnd(L < 0 ? "grandCols" : colLv[L]),
-    includeMeasure, hasMeasures, order: dimOrder(colLv)
+    includeMeasure: mi => includeMeasure("cols", mi), hasMeasures: hasMeasures("cols"), order: dimOrder(colLv)
   });
   colItems.forEach(c => { c.fx = fixedOf(colLv, c.t); });
   const colSig = c => colLv.map((id, i) => id + "=" + (c.t[i] < 0 ? "*" : id === MEAS ? vis[c.t[i]].id : label(id, c.t[i])))
@@ -908,7 +917,7 @@ function buildGrid() {
   const value = (rFixed, rt, c) => {
     const mi = rMeasAt >= 0 ? rt[rMeasAt] : cMeasAt >= 0 ? c.t[cMeasAt] : -1;
     if (mi == null || mi < 0 || !vis[mi]) return EMPTY;
-    if (c.tot != null && !includeMeasure(mi)) return EMPTY;
+    if (c.tot != null && !includeMeasure("cols", mi)) return EMPTY;
     return cellAt([...rFixed, ...c.fx].sort((a, b) => a[0] - b[0]), vis[mi].index);
   };
   const chain = cmps => (a, b) => { for (const c of cmps) { const d = c(a, b); if (d) return d; } return 0; };
@@ -923,7 +932,7 @@ function buildGrid() {
       }
       const col = colBySig.get(k.sig);
       if (!col || rowLv[L] === MEAS) continue;
-      const fallback = col.tot != null ? vis.findIndex((_, mi) => includeMeasure(mi)) : 0;
+      const fallback = col.tot != null ? vis.findIndex((_, mi) => includeMeasure("cols", mi)) : 0;
       const mVis = cMeasAt >= 0 ? col.t[cMeasAt] : rMeasAt >= 0 && rMeasAt < L ? prefix[rMeasAt] : fallback;
       const meas = vis[mVis];
       if (!meas) continue;
@@ -976,7 +985,7 @@ function buildGrid() {
   const rowSub = subOf(rowLv);
   const rowItems = axisItems(rowLv, vis, {
     sub: rowSub, grand: layout.totals.grandRows, atEnd: L => totalAtEnd(L < 0 ? "grandRows" : rowLv[L]),
-    includeMeasure, hasMeasures, order: rowOrder, flatCmp,
+    includeMeasure: mi => includeMeasure("rows", mi), hasMeasures: hasMeasures("rows"), order: rowOrder, flatCmp,
     fold: foldOn ? { can: canFold, open: isOpen } : null
   });
   rowItems.forEach(r => { r.fx = fixedOf(rowLv, r.t); });
@@ -996,7 +1005,7 @@ function buildGrid() {
     vis, rowLv, colLv, rowItems, colItems, text,
     cell: (r, c) => {
       const mi = rMeasAt >= 0 ? r.t[rMeasAt] : cMeasAt >= 0 ? c.t[cMeasAt] : -1;
-      if ((r.tot != null || c.tot != null) && !includeMeasure(mi)) return EMPTY;
+      if (r.tot != null && !includeMeasure("rows", mi) || c.tot != null && !includeMeasure("cols", mi)) return EMPTY;
       const v = value(r.fx, r.t, c);
       const f = fmts[mi];
       return f && typeof v.s === "number" && isFinite(v.s) ? { f: f(v.s), s: v.s } : v;
@@ -1257,7 +1266,10 @@ function cleanLayout(o) {
     open: { depth: Math.max(0, Math.min(20, parseInt(o.open && o.open.depth) || 0)), flip: (seen.clear(), ids(o.open && o.open.flip, 1000)) },
     dec: Math.max(-MAX_DEC, Math.min(MAX_DEC, parseInt(o.dec) || 0)),
     totals: { sub: (seen.clear(), ids(t.sub)), grandRows: !!t.grandRows, grandCols: !!t.grandCols, atEnd: !!t.atEnd,
-      positions, measures: Array.isArray(t.measures) ? (seen.clear(), ids(t.measures)) : null }, sort };
+      positions, measures: Object.fromEntries(["rows", "cols"].map(axis => {
+        const selected = totalMeasures(t, axis);
+        return [axis, selected ? (seen.clear(), ids(selected)) : null];
+      })) }, sort };
 }
 function authorDefault() {
   const d = readJSON(store.get("layout")), l = d && cleanLayout(d.layout);
@@ -1599,10 +1611,17 @@ function renderTotalsMenu() {
         `<div class="hint">Add a second field for subtotals</div>`);
   };
   const measures = layout.measures.map(id => model.measById.get(id)).filter(m => m && !isOff(m.id));
+  const metricRow = measure => `<div class="total-metrics"><span>${esc(measure ? measure.label : "All metrics")}</span>` +
+    ["rows", "cols"].map(axis => {
+      const selected = totalMeasures(t, axis), checked = !selected || measure && selected.includes(measure.id);
+      const attrs = measure ? `data-total-measure="${esc(measure.id)}"` : "data-total-all";
+      return `<label><input type="checkbox" ${attrs} data-total-axis="${axis}"${checked ? " checked" : ""} ` +
+        `aria-label="${esc((axis === "rows" ? "Row" : "Column") + " totals for " + (measure ? measure.label : "all metrics"))}"></label>`;
+    }).join("") + `</div>`;
   $("totalsMenu").innerHTML = section("Rows", layout.rows, "grandRows") + "<hr>" +
     section("Columns", layout.cols, "grandCols") + "<hr><h4>Metrics included</h4>" +
-    box("data-total-all", !Array.isArray(t.measures), "All metrics") +
-    measures.map(m => box(`data-total-measure="${esc(m.id)}"`, !Array.isArray(t.measures) || t.measures.includes(m.id), m.label)).join("");
+    `<div class="total-metrics"><span>Metric</span><span>Rows</span><span>Columns</span></div>` +
+    metricRow(null) + measures.map(metricRow).join("");
 }
 const MENUS = { totals: ["totalsMenu", "btnTotals", () => renderTotalsMenu()], sort: ["sortMenu", "btnSort", () => renderSortMenu()] };
 function toggleMenu(name, open) {
@@ -1628,10 +1647,13 @@ $("totalsMenu").addEventListener("change", e => {
   if (el.dataset.grand) t[el.dataset.grand] = el.checked;
   else if (el.dataset.sub) t.sub = el.checked ? [...t.sub, el.dataset.sub] : t.sub.filter(x => x !== el.dataset.sub);
   else if (el.dataset.totalPos) t.positions = { ...t.positions, [el.dataset.totalPos]: el.value };
-  else if (el.hasAttribute("data-total-all")) t.measures = el.checked ? null : [];
-  else if (el.dataset.totalMeasure) {
-    const ids = Array.isArray(t.measures) ? t.measures : layout.measures.slice();
-    t.measures = el.checked ? [...new Set([...ids, el.dataset.totalMeasure])] : ids.filter(id => id !== el.dataset.totalMeasure);
+  else if (["rows", "cols"].includes(el.dataset.totalAxis)) {
+    const axis = el.dataset.totalAxis;
+    const ids = totalMeasures(t, axis) ?? layout.measures.slice();
+    t.measures = { rows: totalMeasures(t, "rows"), cols: totalMeasures(t, "cols") };
+    if (el.hasAttribute("data-total-all")) t.measures[axis] = el.checked ? null : [];
+    else if (el.dataset.totalMeasure) t.measures[axis] = el.checked ? [...new Set([...ids, el.dataset.totalMeasure])] : ids.filter(id => id !== el.dataset.totalMeasure);
+    else return;
   } else return;
   commit(next);
 });

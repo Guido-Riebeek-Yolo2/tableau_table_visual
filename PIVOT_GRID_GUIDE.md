@@ -123,11 +123,13 @@ Open **Totals** in the toolbar:
 - **Grand total** for rows and/or columns.
 - **Subtotals per [field]** for every field that has another field inside it. Subtotals follow the field if it's moved to the other axis.
 - Each grand total and subtotal has its own position selector: **Top / Bottom** for rows, **Left / Right** for columns. For example, row grand totals can be at the top while column grand totals are on the right. The default is top/left; existing saved layouts keep their previous positions.
-- **Metrics included** defaults to **All metrics**. Clear it and tick only the metrics you want to total. This applies to both grand totals and subtotals, without hiding any metric's ordinary data cells or collapsed-group values.
+- **Metrics included** has separate **Rows** and **Columns** checkboxes for every metric, plus **All metrics** for each axis. Each axis defaults to all metrics. Clear its All metrics checkbox and select individual metrics, or uncheck specific metrics directly. Row choices apply to row grand totals and subtotals; column choices apply to column grand totals and subtotals. Ordinary data cells and collapsed-group values are unchanged.
 
-When Measure Names is on the total's axis, only selected metrics get total rows or columns. When it is on the other axis, unselected metrics' total cells stay blank. Selecting no metrics removes all total rows and columns.
+For example, keep **Rows** checked for **Bet Eur Diff** and **Bet Eur Diff%**, but uncheck **Columns** for those metrics. Their row totals remain populated, while their empty column grand-total columns are removed. Existing saved layouts with a single metric selection apply that selection to both axes until you change it.
 
-To sort by one metric's overall total, enable **Columns > Grand total**, include only that metric, then use the sort button on its grand-total column or choose that column in **Sort grid**. With Measure Names on rows, that total column uses the selected metric to sort groups; with multiple metrics selected, it uses the first selected metric in the Values order.
+When Measure Names is on the total's axis, only metrics selected for that axis get total rows or columns. When it is on the other axis, that axis's unselected total cells stay blank. Selecting no metrics for one axis removes its total rows or columns without changing the other axis. At the intersection of a row total and column total, the metric must be included on both axes.
+
+To sort by one metric's overall total, enable **Columns > Grand total**, include only that metric under **Columns**, then use the sort button on its grand-total column or choose that column in **Sort grid**. With Measure Names on rows, that total column uses the selected column-total metric to sort groups; with multiple metrics selected, it uses the first selected metric in the Values order.
 
 How the numbers are calculated depends on each measure's total rule (section 7). If a measure can't be totalled correctly, its total cells stay blank, never wrong.
 
