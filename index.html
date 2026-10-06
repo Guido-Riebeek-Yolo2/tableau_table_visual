@@ -104,6 +104,10 @@
   .menu label.disabled { opacity: .5; cursor: default; }
   .menu hr { border: 0; border-top: 1px solid var(--line); margin: 5px 0; }
   .menu .hint { padding: 2px 12px; color: var(--ink-2); font-style: italic; }
+  #totalsMenu { max-width: calc(100vw - 8px); overflow-y: auto; }
+  #totalsMenu label { white-space: normal; overflow-wrap: anywhere; }
+  .total-option { display: grid; grid-template-columns: minmax(0, 1fr) 76px; align-items: center; padding-right: 12px; }
+  .total-option select { width: 100%; min-width: 0; font: inherit; color: var(--ink); }
 
   #notice { flex: none; padding: 5px 10px; background: #f2f7fa; color: var(--ink-2); border-bottom: 1px solid var(--line); }
   #notice:empty { display: none; }
@@ -500,7 +504,7 @@ const natural = new Intl.Collator(undefined, { numeric: true, sensitivity: "base
 const cmpKey = (a, b) => (typeof a === "number" && typeof b === "number") ? a - b : natural.compare(String(a), String(b));
 
 let model = null;      // the sheet's data, independent of layout
-let layout = null;     // { rows, cols, measures, hidden, removed, grouped, expand, open, totals: { sub, grandRows, grandCols, atEnd }, sort }
+let layout = null;     // { rows, cols, measures, hidden, removed, grouped, expand, open, totals: { sub, grandRows, grandCols, atEnd, positions, measures }, sort }
 // layout.open: row groups open with Expand rows on. Levels below `depth` start open; `flip` holds "level:path" exceptions.
 let picked = new Map(), anchor = null;   // selected value cells: "row,col" -> td; anchor = [row, col] for Shift+click
 let worksheet = null;
@@ -665,7 +669,7 @@ function defaultLayout() {
   return {
     rows, cols, measures: model.measures.filter(m => m.axis !== "fields").map(m => m.id), hidden: [], removed: [],
     grouped: true, expand: false, open: { depth: 0, flip: [] }, dec: 0,
-    totals: { sub: [], grandRows: false, grandCols: false, atEnd: false },  // sub: field ids with subtotals, on whichever axis
+    totals: { sub: [], grandRows: false, grandCols: false, atEnd: false, positions: {}, measures: null },  // sub: field ids with subtotals, on whichever axis
     sort: []     // ordered keys: { type: "dim", id, dir } | { type: "val", sig: column signature, dir }
   };
 }
@@ -690,7 +694,10 @@ function reconcile(old, prev) {
   def.cols.forEach(id => { if (!placed.has(id)) cols.push(id); });
   def.measures.forEach(id => { if (!placed.has(id)) measures.push(id); });
   const hidden = old.hidden.filter(id => measures.includes(id));
-  const totals = { ...def.totals, ...old.totals, sub: old.totals.sub.filter(id => id === MEAS || dimIds.has(id)) };
+  const totals = { ...def.totals, ...old.totals, sub: old.totals.sub.filter(id => id === MEAS || dimIds.has(id)),
+    positions: Object.fromEntries(Object.entries(old.totals.positions || {}).filter(([id]) =>
+      id === "grandRows" || id === "grandCols" || id === MEAS || dimIds.has(id))),
+    measures: Array.isArray(old.totals.measures) ? old.totals.measures.filter(id => model.measById.has(id)) : null };
   const sort = (Array.isArray(old.sort) ? old.sort : []).filter(k => k.type !== "dim" || dimIds.has(k.id));
   return { rows, cols, measures, hidden, removed, grouped: old.grouped, expand: !!old.expand, open: old.open || def.open, dec: old.dec || 0, totals, sort };
 }
@@ -698,6 +705,8 @@ function reconcile(old, prev) {
 const visibleMeasures = () => layout.measures.filter(id => !layout.hidden.includes(id) && !isOff(id)).map(id => model.measById.get(id));
 const activeLevels = (list, vis) => list.filter(id => id === MEAS ? vis.length > 0 : !isOff(id));
 const levelName = id => id === MEAS ? "Measure Names" : model.dims[model.dimPos.get(id)].label;
+const totalAtEnd = key => (layout.totals.positions || {})[key] === "end" ||
+  (!(key in (layout.totals.positions || {})) && layout.totals.atEnd);
 
 /* ============================================================
    PIVOT
@@ -787,16 +796,17 @@ const numOrNull = c => typeof c.s === "number" && isFinite(c.s) ? c.s : null;
 /* One item per header path on an axis, in display order, totals included.
    t:   member index per level; -1 = all members (a total); the Measure Names level holds a visible-measure index.
    tot: null for data paths, else the level being totalled (-1 = grand total).
-   opt: { sub: Set of levels with subtotals, grand, atEnd, order(L, prefix, members), flatCmp, fold: { can(L), open(L, prefix) } }
+  opt: { sub: Set of levels with subtotals, grand, atEnd(L), includeMeasure(i), hasMeasures, order(L, prefix, members), flatCmp, fold: { can(L), open(L, prefix) } }
    A closed group is one row per measure at that level (fold: L), like a subtotal without the Total label. */
 function axisItems(levels, vis, opt) {
   const tuples = axisTuples(levels, vis);
   const measAt = levels.indexOf(MEAS);
   const dimAfter = L => levels.slice(L + 1).some(id => id !== MEAS);
-  const totalsFor = (L, prefix) => {
-    if (!dimAfter(L)) return [];
+  const totalsFor = (L, prefix, filtered = true) => {
+    if (!dimAfter(L) || filtered && !opt.hasMeasures) return [];
     const ms = measAt > L ? vis.map((_, i) => i) : [null];
-    return ms.map(m => ({ t: levels.map((id, i) => i <= L ? prefix[i] : id === MEAS ? m : -1), tot: L }));
+    return ms.map(m => ({ t: levels.map((id, i) => i <= L ? prefix[i] : id === MEAS ? m : -1), tot: L }))
+      .filter(it => !filtered || measAt < 0 || opt.includeMeasure(it.t[measAt]));
   };
   let items;
   if (opt.flatCmp) {
@@ -810,12 +820,12 @@ function axisItems(levels, vis, opt) {
       for (const m of opt.order(L, prefix, [...groups.keys()])) {
         const p = [...prefix, m];
         if (opt.fold && opt.fold.can(L) && !opt.fold.open(L, p)) {
-          out.push(...totalsFor(L, p).map(it => ({ ...it, tot: null, fold: L })));
+          out.push(...totalsFor(L, p, false).map(it => ({ ...it, tot: null, fold: L })));
           continue;
         }
         const inner = walk(groups.get(m), L + 1, p);
         const tots = opt.sub.has(L) ? totalsFor(L, p) : [];
-        out.push(...(opt.atEnd ? inner.concat(tots) : tots.concat(inner)));
+        out.push(...(opt.atEnd(L) ? inner.concat(tots) : tots.concat(inner)));
       }
       return out;
     };
@@ -823,7 +833,7 @@ function axisItems(levels, vis, opt) {
   }
   if (opt.grand && levels.length) {
     const g = totalsFor(-1, []);
-    items = opt.atEnd ? items.concat(g) : g.concat(items);
+    items = opt.atEnd(-1) ? items.concat(g) : g.concat(items);
   }
   return items;
 }
@@ -834,6 +844,9 @@ function buildGrid() {
   const vis = visibleMeasures();
   const rowLv = activeLevels(layout.rows, vis), colLv = activeLevels(layout.cols, vis);
   const rMeasAt = rowLv.indexOf(MEAS), cMeasAt = colLv.indexOf(MEAS);
+  const selected = Array.isArray(layout.totals.measures) ? new Set(layout.totals.measures) : null;
+  const includeMeasure = mi => !selected || selected.has(vis[mi]?.id);
+  const hasMeasures = vis.some((_, mi) => includeMeasure(mi));
   const label = (id, idx) => {
     if (id === MEAS) return vis[idx].label;
     const d = model.dims[model.dimPos.get(id)];
@@ -848,7 +861,8 @@ function buildGrid() {
   };
 
   const colItems = axisItems(colLv, vis, {
-    sub: subOf(colLv), grand: layout.totals.grandCols, atEnd: layout.totals.atEnd, order: dimOrder(colLv)
+    sub: subOf(colLv), grand: layout.totals.grandCols, atEnd: L => totalAtEnd(L < 0 ? "grandCols" : colLv[L]),
+    includeMeasure, hasMeasures, order: dimOrder(colLv)
   });
   colItems.forEach(c => { c.fx = fixedOf(colLv, c.t); });
   const colSig = c => colLv.map((id, i) => id + "=" + (c.t[i] < 0 ? "*" : id === MEAS ? vis[c.t[i]].id : label(id, c.t[i])))
@@ -859,6 +873,7 @@ function buildGrid() {
   const value = (rFixed, rt, c) => {
     const mi = rMeasAt >= 0 ? rt[rMeasAt] : cMeasAt >= 0 ? c.t[cMeasAt] : -1;
     if (mi == null || mi < 0 || !vis[mi]) return EMPTY;
+    if (c.tot != null && !includeMeasure(mi)) return EMPTY;
     return cellAt([...rFixed, ...c.fx].sort((a, b) => a[0] - b[0]), vis[mi].index);
   };
   const chain = cmps => (a, b) => { for (const c of cmps) { const d = c(a, b); if (d) return d; } return 0; };
@@ -873,7 +888,8 @@ function buildGrid() {
       }
       const col = colBySig.get(k.sig);
       if (!col || rowLv[L] === MEAS) continue;
-      const mVis = cMeasAt >= 0 ? col.t[cMeasAt] : rMeasAt >= 0 && rMeasAt < L ? prefix[rMeasAt] : 0;
+      const fallback = col.tot != null ? vis.findIndex((_, mi) => includeMeasure(mi)) : 0;
+      const mVis = cMeasAt >= 0 ? col.t[cMeasAt] : rMeasAt >= 0 && rMeasAt < L ? prefix[rMeasAt] : fallback;
       const meas = vis[mVis];
       if (!meas) continue;
       // A group of a measure that can't be added up has no subtotal: don't sort the groups by it.
@@ -924,7 +940,8 @@ function buildGrid() {
   };
   const rowSub = subOf(rowLv);
   const rowItems = axisItems(rowLv, vis, {
-    sub: rowSub, grand: layout.totals.grandRows, atEnd: layout.totals.atEnd, order: rowOrder, flatCmp,
+    sub: rowSub, grand: layout.totals.grandRows, atEnd: L => totalAtEnd(L < 0 ? "grandRows" : rowLv[L]),
+    includeMeasure, hasMeasures, order: rowOrder, flatCmp,
     fold: foldOn ? { can: canFold, open: isOpen } : null
   });
   rowItems.forEach(r => { r.fx = fixedOf(rowLv, r.t); });
@@ -943,8 +960,9 @@ function buildGrid() {
   return {
     vis, rowLv, colLv, rowItems, colItems, text,
     cell: (r, c) => {
-      const v = value(r.fx, r.t, c);
       const mi = rMeasAt >= 0 ? r.t[rMeasAt] : cMeasAt >= 0 ? c.t[cMeasAt] : -1;
+      if ((r.tot != null || c.tot != null) && !includeMeasure(mi)) return EMPTY;
+      const v = value(r.fx, r.t, c);
       const f = fmts[mi];
       return f && typeof v.s === "number" && isFinite(v.s) ? { f: f(v.s), s: v.s } : v;
     },
@@ -1195,13 +1213,16 @@ function cleanLayout(o) {
   const measures = ids(o.measures);
   seen.clear();
   const t = o.totals && typeof o.totals === "object" ? o.totals : {};
+  const positions = Object.fromEntries(Object.entries(t.positions && typeof t.positions === "object" ? t.positions : {})
+    .filter(([id, pos]) => id.length <= 300 && (pos === "start" || pos === "end")).slice(0, 200));
   const sort = (Array.isArray(o.sort) ? o.sort : []).slice(0, 20)
     .filter(k => k && ((k.type === "dim" && typeof k.id === "string") || (k.type === "val" && typeof k.sig === "string")))
     .map(k => ({ ...(k.type === "dim" ? { type: "dim", id: k.id } : { type: "val", sig: k.sig }), dir: k.dir === "desc" ? "desc" : "asc" }));
   return { rows, cols, measures, hidden: ids(o.hidden), removed, grouped: o.grouped !== false, expand: o.expand === true,
     open: { depth: Math.max(0, Math.min(20, parseInt(o.open && o.open.depth) || 0)), flip: (seen.clear(), ids(o.open && o.open.flip, 1000)) },
     dec: Math.max(-MAX_DEC, Math.min(MAX_DEC, parseInt(o.dec) || 0)),
-    totals: { sub: (seen.clear(), ids(t.sub)), grandRows: !!t.grandRows, grandCols: !!t.grandCols, atEnd: !!t.atEnd }, sort };
+    totals: { sub: (seen.clear(), ids(t.sub)), grandRows: !!t.grandRows, grandCols: !!t.grandCols, atEnd: !!t.atEnd,
+      positions, measures: Array.isArray(t.measures) ? (seen.clear(), ids(t.measures)) : null }, sort };
 }
 function authorDefault() {
   const d = readJSON(store.get("layout")), l = d && cleanLayout(d.layout);
@@ -1526,20 +1547,27 @@ function renderTotalsMenu() {
   const vis = visibleMeasures(), t = layout.totals;
   const box = (attrs, on, text, disabled) =>
     `<label${disabled ? ' class="disabled"' : ""}><input type="checkbox" ${attrs}${on ? " checked" : ""}${disabled ? " disabled" : ""}>${esc(text)}</label>`;
+  const total = (attrs, key, on, text, disabled, axis) => {
+    const end = totalAtEnd(key);
+    return `<div class="total-option">${box(attrs, on, text, disabled)}` +
+      `<select data-total-pos="${esc(key)}" aria-label="${esc(axis + " " + text + " position")}"${disabled || !on ? " disabled" : ""}>` +
+      `<option value="start"${!end ? " selected" : ""}>${axis === "Rows" ? "Top" : "Left"}</option>` +
+      `<option value="end"${end ? " selected" : ""}>${axis === "Rows" ? "Bottom" : "Right"}</option></select></div>`;
+  };
   const section = (title, list, grandKey) => {
     const lv = activeLevels(list, vis);
     // Subtotals only make sense for a field with another field inside it.
     const eligible = lv.filter((id, L) => lv.slice(L + 1).some(x => x !== MEAS));
     return `<h4>${title}</h4>` +
-      box(`data-grand="${grandKey}"`, t[grandKey], "Grand total", !lv.some(id => id !== MEAS)) +
-      (eligible.map(id => box(`data-sub="${esc(id)}"`, t.sub.includes(id), "Subtotals per " + levelName(id))).join("") ||
+      total(`data-grand="${grandKey}"`, grandKey, t[grandKey], "Grand total", !lv.some(id => id !== MEAS), title) +
+      (eligible.map(id => total(`data-sub="${esc(id)}"`, id, t.sub.includes(id), "Subtotals per " + levelName(id), false, title)).join("") ||
         `<div class="hint">Add a second field for subtotals</div>`);
   };
-  const radio = (val, text) =>
-    `<label><input type="radio" name="totPos" value="${val}"${t.atEnd === (val === "end") ? " checked" : ""}>${text}</label>`;
+  const measures = layout.measures.map(id => model.measById.get(id)).filter(m => m && !isOff(m.id));
   $("totalsMenu").innerHTML = section("Rows", layout.rows, "grandRows") + "<hr>" +
-    section("Columns", layout.cols, "grandCols") + "<hr><h4>Show totals at</h4>" +
-    radio("start", "Top / left") + radio("end", "Bottom / right");
+    section("Columns", layout.cols, "grandCols") + "<hr><h4>Metrics included</h4>" +
+    box("data-total-all", !Array.isArray(t.measures), "All metrics") +
+    measures.map(m => box(`data-total-measure="${esc(m.id)}"`, !Array.isArray(t.measures) || t.measures.includes(m.id), m.label)).join("");
 }
 const MENUS = { totals: ["totalsMenu", "btnTotals", () => renderTotalsMenu()], sort: ["sortMenu", "btnSort", () => renderSortMenu()] };
 function toggleMenu(name, open) {
@@ -1555,6 +1583,7 @@ function toggleMenu(name, open) {
   draw();
   const r = btn.getBoundingClientRect();
   menu.style.top = r.bottom + 4 + "px";
+  menu.style.maxHeight = Math.max(0, innerHeight - r.bottom - 8) + "px";
   menu.style.left = Math.max(4, Math.min(r.left, innerWidth - menu.offsetWidth - 4)) + "px";
 }
 $("btnTotals").onclick = () => toggleMenu("totals", $("totalsMenu").hidden);
@@ -1563,7 +1592,12 @@ $("totalsMenu").addEventListener("change", e => {
   const el = e.target, next = structuredClone(layout), t = next.totals;
   if (el.dataset.grand) t[el.dataset.grand] = el.checked;
   else if (el.dataset.sub) t.sub = el.checked ? [...t.sub, el.dataset.sub] : t.sub.filter(x => x !== el.dataset.sub);
-  else if (el.name === "totPos") t.atEnd = el.value === "end";
+  else if (el.dataset.totalPos) t.positions = { ...t.positions, [el.dataset.totalPos]: el.value };
+  else if (el.hasAttribute("data-total-all")) t.measures = el.checked ? null : [];
+  else if (el.dataset.totalMeasure) {
+    const ids = Array.isArray(t.measures) ? t.measures : layout.measures.slice();
+    t.measures = el.checked ? [...new Set([...ids, el.dataset.totalMeasure])] : ids.filter(id => id !== el.dataset.totalMeasure);
+  } else return;
   commit(next);
 });
 document.addEventListener("pointerdown", e => {
