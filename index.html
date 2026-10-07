@@ -270,6 +270,8 @@
   label.tool { cursor: pointer; }
   .fp-field { display: grid; grid-template-columns: 110px 1fr; gap: 8px; align-items: center; padding: 3px 12px; }
   .fp-field input[type=color] { width: 44px; height: 23px; padding: 1px; border: 1px solid var(--line-strong); border-radius: 3px; background: var(--bg); cursor: pointer; }
+  .fp-mf-color { display: flex; align-items: center; gap: 7px; }
+  .fp-mf-color input[type=checkbox] { margin: 0; }
   .fp-field input[type=checkbox] { justify-self: start; }
   .fp-style { display: flex; gap: 4px; }
   .fp-style label { position: relative; }
@@ -1008,7 +1010,15 @@ function buildGrid() {
       if (r.tot != null && !includeMeasure("rows", mi) || c.tot != null && !includeMeasure("cols", mi)) return EMPTY;
       const v = value(r.fx, r.t, c);
       const f = fmts[mi];
-      return f && typeof v.s === "number" && isFinite(v.s) ? { f: f(v.s), s: v.s } : v;
+      let cell = f && typeof v.s === "number" && isFinite(v.s) ? { f: f(v.s), s: v.s } : v;
+      const colors = vis[mi] && vis[mi].colorFormat;
+      if (typeof cell.s === "number" && cell.s !== 0 && colors) {
+        const positive = cell.s > 0;
+        const ink = positive ? colors.positiveColor : colors.negativeColor;
+        const bg = positive ? colors.positiveBg : colors.negativeBg;
+        cell = { ...cell, style: [ink && `color:${ink}`, bg && `background-color:${bg}`].filter(Boolean).join(";") };
+      }
+      return cell;
     },
     fmtOf: mi => fmts[mi] || (vis[mi] && vis[mi].fmt),
     subHidden: !!flatCmp && rowSub.size > 0,
@@ -1125,7 +1135,8 @@ function render() {
     for (let c = 0; c < colItems.length; c++) {
       const ct = colItems[c];
       const cls2 = (gbCol[c] ? "gc " : "") + (ct.tot == null ? "" : ct.tot === -1 ? "grand" : "tot");
-      b += `<td${cls2 ? ` class="${cls2.trim()}"` : ""}>${esc(g.cell(it, ct).f)}</td>`;
+      const cell = g.cell(it, ct);
+      b += `<td${cls2 ? ` class="${cls2.trim()}"` : ""}${cell.style ? ` style="${esc(cell.style)}"` : ""}>${esc(cell.f)}</td>`;
     }
     b += "</tr>";
   }
@@ -1801,12 +1812,16 @@ function cleanNumberFormat(c) {
   const txt = s => typeof s === "string" ? s.replace(/[^\p{L}\p{N}\p{Sc} %.,()\/-]/gu, "").slice(0, 12) : "";
   const n = Math.round(Number(c.decimals));
   return {
-    type: c.type === "percent" ? "percent" : "number",
+    type: ["auto", "number", "percent"].includes(c.type) ? c.type : "number",
     decimals: isFinite(n) ? Math.min(10, Math.max(0, n)) : 0,
     units: ["", "K", "M", "B"].includes(c.units) ? c.units : "",
     prefix: txt(c.prefix), suffix: txt(c.suffix),
     thousands: c.thousands !== false,
-    negative: c.negative === "paren" ? "paren" : "minus"
+    negative: c.negative === "paren" ? "paren" : "minus",
+    positiveColor: HEX.test(c.positiveColor) ? c.positiveColor : "",
+    negativeColor: HEX.test(c.negativeColor) ? c.negativeColor : "",
+    positiveBg: HEX.test(c.positiveBg) ? c.positiveBg : "",
+    negativeBg: HEX.test(c.negativeBg) ? c.negativeBg : ""
   };
 }
 const locale = () => {
@@ -1864,7 +1879,8 @@ function applyFieldFormats(m) {
   }
   for (const meas of m.measures) {
     const c = settingFor(format.measureFormats, meas);
-    meas.custom = c ? makeNumberFormat(c) : null;
+    meas.custom = c && c.type !== "auto" ? makeNumberFormat(c) : null;
+    meas.colorFormat = c || null;
   }
   for (const d of m.dims) {
     const p = d.isDate && format.dateFormats[d.id];
@@ -2038,8 +2054,8 @@ function totalSectionHtml() {
 }
 function previewText(m, key) {
   const c = format.measureFormats[key] || format.measureFormats[m.id];
-  const f = c ? makeNumberFormat(c) : m.fmt, v = m.sample ?? 1234567.891;
-  return `Example: ${f(Math.abs(v))}  /  ${f(-Math.abs(v))}` + (c ? "" : "  (Tableau's format)");
+  const f = c && c.type !== "auto" ? makeNumberFormat(c) : m.fmt, v = m.sample ?? 1234567.891;
+  return `Example: ${f(Math.abs(v))}  /  ${f(-Math.abs(v))}` + (c && c.type !== "auto" ? "" : "  (Tableau's format)");
 }
 function measureSectionHtml() {
   if (!model || !model.measures.length) return `<div class="fp-hint">No measures on this sheet.</div>`;
@@ -2048,9 +2064,11 @@ function measureSectionHtml() {
   if (!paramValues(m).some(o => o.v === fpMeasureVal)) fpMeasureVal = "";
   const key = valKey(fpMeasure, fpMeasureVal), saved = format.measureFormats[key];
   const def = fpMeasureVal ? format.measureFormats[fpMeasure] : null;
-  const c = { ...NUMBER_DEFAULT, ...(saved || def) }, off = saved ? "" : " disabled";
+  const c = { ...NUMBER_DEFAULT, ...(saved || def) }, off = saved && c.type !== "auto" ? "" : " disabled";
   const opt = (v, t, cur) => `<option value="${esc(v)}"${v === cur ? " selected" : ""}>${esc(t)}</option>`;
   const row = (label, input) => `<label class="fp-field"><span>${label}</span>${input}</label>`;
+  const colorRow = (label, key, fallback) => row(label, `<span class="fp-mf-color"><input type="color" data-mf="${key}" value="${c[key] || fallback}"${c[key] ? "" : " disabled"}>` +
+    `<input type="checkbox" data-mf-enable="${key}" aria-label="Enable ${label.toLowerCase()} colour"${c[key] ? " checked" : ""}></span>`);
   return row("Measure", `<select data-mf-pick>${model.measures.map(x =>
       opt(x.id, x.label + (format.measureFormats[x.id] || hasValueKeys(format.measureFormats, x.id) ? "  \u2022 custom" : ""), fpMeasure)).join("")}</select>`) +
     valueRow(m, fpMeasureVal, "data-mf-val", format.measureFormats) +
@@ -2063,6 +2081,8 @@ function measureSectionHtml() {
     row("Suffix", `<input type="text" data-mf="suffix" maxlength="12" value="${esc(c.suffix)}"${off}>`) +
     row("Thousands separator", `<input type="checkbox" data-mf="thousands"${c.thousands ? " checked" : ""}${off}>`) +
     row("Negative values", `<select data-mf="negative"${off}>${opt("minus", "-1234", c.negative)}${opt("paren", "(1234)", c.negative)}</select>`) +
+    colorRow("Positive text", "positiveColor", "#16803c") + colorRow("Negative text", "negativeColor", "#b42318") +
+    colorRow("Positive background", "positiveBg", "#e8f5ec") + colorRow("Negative background", "negativeBg", "#fdeceb") +
     `<div class="fp-hint" id="fpPreview">${esc(previewText(m, key))}</div>`;
 }
 function dateSectionHtml() {
@@ -2158,10 +2178,19 @@ $("fpBody").addEventListener("input", e => {
   const el = e.target, key = el.dataset.k;
   if (el.matches("[data-mf-pick]")) { fpMeasure = el.value; $("fpMeasures").innerHTML = measureSectionHtml(); return; }
   if (el.matches("[data-mf-val]")) { fpMeasureVal = el.value; $("fpMeasures").innerHTML = measureSectionHtml(); return; }
+  if (el.dataset.mfEnable) {
+    const mf = { ...format.measureFormats }, key = valKey(fpMeasure, fpMeasureVal), k = el.dataset.mfEnable;
+    const current = { ...NUMBER_DEFAULT, type: "auto", ...(mf[fpMeasure] || {}), ...(mf[key] || {}) };
+    current[k] = el.checked ? el.previousElementSibling.value : "";
+    mf[key] = cleanNumberFormat(current);
+    el.previousElementSibling.disabled = !el.checked;
+    setFormat(cleanFormat({ ...format, measureFormats: mf }));
+    return;
+  }
   if (el.dataset.mf) {
     const mf = { ...format.measureFormats }, k = el.dataset.mf, key = valKey(fpMeasure, fpMeasureVal);
-    if (k === "type" && el.value === "auto") delete mf[key];
-    else mf[key] = cleanNumberFormat({ ...NUMBER_DEFAULT, ...(mf[key] || mf[fpMeasure]), [k]: el.type === "checkbox" ? el.checked : el.value });
+    mf[key] = cleanNumberFormat({ ...NUMBER_DEFAULT, type: "auto", ...(mf[fpMeasure] || {}), ...(mf[key] || {}),
+      [k]: el.type === "checkbox" ? el.checked : el.value });
     setFormat(cleanFormat({ ...format, measureFormats: mf }));
     if (k === "type") $("fpMeasures").innerHTML = measureSectionHtml();
     else $("fpPreview").textContent = previewText(model.measById.get(fpMeasure), key);
