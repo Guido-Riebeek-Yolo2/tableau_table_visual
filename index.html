@@ -335,6 +335,9 @@
   @media (prefers-reduced-motion: reduce) {
     .landed { animation: none; }
   }
+  /* Set by the subscription manager's renderer for image/PDF captures. */
+  html[data-export-mode] #toolbar, html[data-export-mode] #shelves, html[data-export-mode] #side,
+  html[data-export-mode] .menu, html[data-export-mode] #formatPanel { display: none !important; }
 </style>
 </head>
 <body>
@@ -426,7 +429,7 @@
       </div>
       <div class="pills" id="pillsAvail"></div>
     </aside>
-    <div id="gridWrap"><table id="grid"></table></div>
+    <div id="gridWrap"><table id="grid" data-export-root></table></div>
     <div id="empty"><p><strong>Loading data…</strong></p></div>
   </div>
   <div id="diag"><details open><summary>Diagnostics</summary><pre id="diagText">–</pre></details></div>
@@ -1046,6 +1049,13 @@ const runLens = (fd, lvl) => {
    RENDER
    ============================================================ */
 function render() {
+  markRendering();
+  try { renderGrid(); }
+  catch (e) { markError("Couldn't draw the grid: " + ((e && e.message) || e)); throw e; }
+  markReady();
+}
+
+function renderGrid() {
   hideTip();
   renderShelves();
   const app = $("app");
@@ -2638,19 +2648,64 @@ async function loadParams() {
     if (watchedParams.has(p.id || p.name)) continue;
     watchedParams.add(p.id || p.name);
     p.addEventListener(tableau.TableauEventType.ParameterChanged, async () => {
+      markRendering();
       await loadParams();
       if (model) { applyParams(model); applyFieldFormats(model); render(); }
+      else markReady();
     });
   }
 }
 
 let loading = null, reloadQueued = false;
 function refreshFromTableau() {
+  markRendering();
   if (loading) { reloadQueued = true; return; }
+  let failed = false;
   loading = loadFromTableau()
-    .catch(err => { setNotice("Couldn't read the sheet's data: " + err.message, true); console.error(err); })
-    .finally(() => { loading = null; if (reloadQueued) { reloadQueued = false; refreshFromTableau(); } });
+    .catch(err => {
+      failed = true;
+      markError("Couldn't read the sheet's data: " + err.message);
+      setNotice("Couldn't read the sheet's data: " + err.message, true); console.error(err);
+    })
+    .finally(() => {
+      loading = null;
+      if (reloadQueued) { reloadQueued = false; refreshFromTableau(); }
+      else if (!failed) markReady();
+    });
 }
+
+/* ============================================================
+   RENDER STATE
+   Read by the subscription manager's headless renderer before it captures the
+   dashboard: <html data-render-state="rendering|ready|error" data-render-seq="N">.
+   ============================================================ */
+let renderSeq = 0;
+function markRendering() {
+  const root = document.documentElement;
+  root.dataset.renderState = "rendering";
+  root.dataset.renderSeq = String(++renderSeq);
+  delete root.dataset.renderError;
+}
+function markReady() {
+  if (loading || reloadQueued) return;
+  const seq = renderSeq;
+  // Web fonts change row heights and sticky offsets, so ready waits for the final layout.
+  (document.fonts ? document.fonts.ready : Promise.resolve()).then(() => requestAnimationFrame(() => {
+    if (seq === renderSeq && !loading && !reloadQueued) document.documentElement.dataset.renderState = "ready";
+  }));
+}
+function markError(message) {
+  const root = document.documentElement;
+  root.dataset.renderState = "error";
+  root.dataset.renderError = String(message || "Unknown error");
+}
+function failEmpty(title, text) {
+  markError(title + (text ? ": " + text : ""));
+  showEmpty(title, text);
+}
+// Export mode hides the layout chrome; re-render so sticky header offsets match the new layout.
+new MutationObserver(() => { if (model) render(); })
+  .observe(document.documentElement, { attributes: true, attributeFilter: ["data-export-mode"] });
 
 /* ============================================================
    DEMO DATA (used when the page isn't running inside Tableau)
@@ -2731,12 +2786,13 @@ function diag() {
    ============================================================ */
 // Demo data only ever appears in a local preview (file:// or localhost), never in Tableau.
 (async function init() {
+  markRendering();
   applyFormat(format);
   $("btnFormat").hidden = !LOCAL;
   const hasLib = typeof tableau !== "undefined" && tableau.extensions;
   if (LOCAL && (qs.get("demo") === "1" || !hasLib)) return startDemo("Local preview with demo data.");
   if (!hasLib) {
-    return showEmpty("Couldn't load the Tableau library",
+    return failEmpty("Couldn't load the Tableau library",
       "tableau.extensions.1.latest.min.js is missing next to index.html. Redeploy the extension with that file.");
   }
   // "configure" is the Format Extension button on the Marks card.
@@ -2751,13 +2807,13 @@ function diag() {
     const slow = setTimeout(() => showEmpty("Still connecting to Tableau…",
       "If you opened this page directly, add it to a worksheet instead: Marks card › mark type › Add Extension."), INIT_TIMEOUT_S * 1000);
     try { await ready; }
-    catch (e) { return showEmpty("Couldn't connect to Tableau", (e && e.message) || String(e)); }
+    catch (e) { return failEmpty("Couldn't connect to Tableau", (e && e.message) || String(e)); }
     finally { clearTimeout(slow); }
     showEmpty("Loading data…", "");
   }
   worksheet = tableau.extensions.worksheetContent && tableau.extensions.worksheetContent.worksheet;
   if (!worksheet) {
-    return showEmpty("Add this as a viz extension",
+    return failEmpty("Add this as a viz extension",
       "This extension draws a worksheet. On a sheet, open the mark type menu on the Marks card and choose Add Extension.");
   }
   tableauReady = true;
