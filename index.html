@@ -635,7 +635,7 @@ function inferFormat(cells) {
    measures: [{ id, label, col, axis }]  axis = "values" | "fields"
    data:     rows of cells { f: formatted text, s: sort key }
    ============================================================ */
-function buildModel({ dims, measures, data, rowsReversed }) {
+function buildModel({ dims, measures, data }) {
   const ds = dims.map(d => ({ ...d, baseLabel: d.label, members: [], index: new Map() }));
   ds.forEach(d => {
     const seen = new Map();
@@ -647,8 +647,7 @@ function buildModel({ dims, measures, data, rowsReversed }) {
     d.isDate = data.some(row => row[d.col].dt);
     if (d.isDate) d.times = entries.map(e => typeof e[1] === "number" ? e[1] : null);
   });
-  const viewRows = rowsReversed ? data.slice().reverse() : data;
-  const ranked = tableauRanks(viewRows, ds, new Set(measures.map(m => m.col)));
+  const ranked = tableauRanks(data, ds, new Set(measures.map(m => m.col)));
   ds.forEach((d, i) => { d.rank = ranked.ranks[i]; });
   const keys = new Set();
   const records = data.map(row => {
@@ -688,33 +687,55 @@ function rankFrom(n, pairs, seq) {
   return { rank, ok };
 }
 
-// Tableau sends summary data sorted field by field in the sheet's sort order (manual sorts included), so the
-// field in which two consecutive rows first differ shows that field's order. Which field Tableau sorts by first
-// isn't known: try rows-first, then columns-first, and keep the first consistent one. Otherwise fall back to
-// rows that differ in this field only.
+// Tableau sends summary data sorted field by field in the sheet's sort order (manual sorts included). The next
+// sort field is one whose members form a single run inside every block of rows the earlier fields share (fewest
+// runs wins); its runs then show its member order. Most fields keep Tableau's default ascending sort, which tells
+// whether the rows arrive first-to-last or reversed. Fields not reached use rows that differ in that field only.
 function tableauRanks(rows, ds, measCols) {
   const mem = rows.map(row => ds.map(d => d.index.get(row[d.col].f)));
-  const seqs = ds.map((_, i) => mem.map(m => m[i]));
-  const [r, c, f] = ["rows", "cols", "fields"].map(ax => ds.map((d, i) => d.axis === ax ? i : -1).filter(i => i >= 0));
-  for (const [source, order] of [["rows first", [...r, ...c, ...f]], ["columns first", [...c, ...r, ...f]]]) {
-    const pairs = ds.map(() => []);
-    for (let k = 1; k < mem.length; k++) {
-      const p = order.find(i => mem[k][i] !== mem[k - 1][i]);
-      if (p != null) pairs[p].push([mem[k - 1][p], mem[k][p]]);
+  const n = mem.length, pairs = ds.map(() => []), left = new Set(ds.keys()), used = [];
+  let cuts = [0, n];
+  while (left.size) {
+    let best = -1, bestRuns = Infinity;
+    for (const i of left) {
+      let runs = 0, ok = true;
+      for (let s = 0; s < cuts.length - 1 && ok; s++) {
+        const seen = new Set();
+        for (let k = cuts[s]; k < cuts[s + 1]; k++) {
+          if (k > cuts[s] && mem[k][i] === mem[k - 1][i]) continue;
+          if (seen.has(mem[k][i])) { ok = false; break; }
+          seen.add(mem[k][i]); runs++;
+        }
+      }
+      if (ok && runs < bestRuns) { best = i; bestRuns = runs; }
     }
-    const res = ds.map((d, i) => rankFrom(d.members.length, pairs[i], seqs[i]));
-    if (res.every(x => x.ok)) return { source, ranks: res.map(x => x.rank) };
+    if (best < 0) break;
+    const next = [0];
+    for (let s = 0; s < cuts.length - 1; s++) {
+      for (let k = cuts[s] + 1; k < cuts[s + 1]; k++)
+        if (mem[k][best] !== mem[k - 1][best]) { pairs[best].push([mem[k - 1][best], mem[k][best]]); next.push(k); }
+      next.push(cuts[s + 1]);
+    }
+    cuts = next; left.delete(best); used.push(best);
   }
   const other = rows.length ? rows[0].map((_, j) => j).filter(j => !measCols.has(j)) : [];
-  return { source: "single-field differences", ranks: ds.map((d, i) => {
-    const ctxCols = other.filter(j => j !== d.col), last = new Map(), pairs = [];
+  for (const i of left) {
+    const ctxCols = other.filter(j => j !== ds[i].col), last = new Map();
     rows.forEach((row, k) => {
       const ctx = ctxCols.map(j => row[j].f).join("\u0001"), p = last.get(ctx);
-      if (p != null) pairs.push([p, mem[k][i]]);
+      if (p != null && p !== mem[k][i]) pairs[i].push([p, mem[k][i]]);
       last.set(ctx, mem[k][i]);
     });
-    return rankFrom(d.members.length, pairs, seqs[i]).rank;
-  }) };
+  }
+  let up = 0, down = 0;
+  pairs.flat().forEach(([a, b]) => { if (a < b) up++; else if (a > b) down++; });
+  const reversed = down > up;
+  const order = reversed ? mem.slice().reverse() : mem;
+  return {
+    source: (used.length ? "sorted by " + used.map(i => ds[i].id).join(" > ") : "no sort found") +
+      (left.size ? "; by single-field differences: " + [...left].map(i => ds[i].id).join(", ") : "") + (reversed ? "; rows reversed" : ""),
+    ranks: ds.map((d, i) => rankFrom(d.members.length, reversed ? pairs[i].map(([a, b]) => [b, a]) : pairs[i], order.map(m => m[i])).rank)
+  };
 }
 
 /* ============================================================
@@ -2693,8 +2714,7 @@ async function loadFromTableau() {
     missing.length ? "Some fields could not be read from the sheet: " + missing.join(", ") + ". Open with ?debug=1 for details." : "",
     table.isTotalRowCountLimited ? `Only the first ${data.length.toLocaleString()} rows were loaded. Add filters to the sheet to see everything.` : ""
   ].filter(Boolean).join(" ");
-  // Summary data arrives in the reverse of the sheet's sort order.
-  const m = buildModel({ dims, measures, data, rowsReversed: true });
+  const m = buildModel({ dims, measures, data });
   diagLines.push(`TABLEAU SORT ORDER (from summary data row order, ${m.rankSource})\n` + m.dims.map(d => "  " + d.id + ": " +
     d.members.map((name, i) => [d.rank[i], name]).sort((a, b) => a[0] - b[0]).slice(0, 15).map(e => e[1]).join(" | ")).join("\n"));
   applyParams(m);
