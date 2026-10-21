@@ -731,10 +731,20 @@ function tableauRanks(rows, ds, measCols) {
   pairs.flat().forEach(([a, b]) => { if (a < b) up++; else if (a > b) down++; });
   const reversed = down > up;
   const order = reversed ? mem.slice().reverse() : mem;
+  const custom = [];
+  const ranks = ds.map((d, i) => {
+    const own = reversed ? pairs[i].map(([a, b]) => [b, a]) : pairs[i];
+    const seq = order.map(m => m[i]);
+    if (!own.some(([a, b]) => a > b)) return rankFrom(d.members.length, own, seq).rank;
+    // Seen in Tableau: fields with a custom (e.g. manual) sort arrive opposite to default-sorted fields.
+    custom.push(d.id);
+    return rankFrom(d.members.length, own.map(([a, b]) => [b, a]), seq).rank;
+  });
   return {
     source: (used.length ? "sorted by " + used.map(i => ds[i].id).join(" > ") : "no sort found") +
-      (left.size ? "; by single-field differences: " + [...left].map(i => ds[i].id).join(", ") : "") + (reversed ? "; rows reversed" : ""),
-    ranks: ds.map((d, i) => rankFrom(d.members.length, reversed ? pairs[i].map(([a, b]) => [b, a]) : pairs[i], order.map(m => m[i])).rank)
+      (left.size ? "; by single-field differences: " + [...left].map(i => ds[i].id).join(", ") : "") + (reversed ? "; rows reversed" : "") +
+      (custom.length ? "; custom order flipped: " + custom.join(", ") : ""),
+    ranks
   };
 }
 
