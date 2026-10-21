@@ -109,7 +109,8 @@ Keyboard, on a focused pill:
 
 - **Header buttons.** Every value column header and every field name in the grid's header corner has a sort button.
   - Value column: 1st click largest first, 2nd click smallest first, 3rd click removes the sort.
-  - Field: 1st click A to Z, 2nd click Z to A, 3rd click removes the sort.
+  - Field: 1st click A to Z, 2nd click Z to A, 3rd click Tableau sort order, 4th click removes the sort.
+  - **Tableau sort order** follows the sort set on the field in Tableau (pill › Sort, including Manual), as read from the order of the sheet's summary data.
   - A button you click becomes the first sort level. With several levels, the buttons show their position (1, 2, ...).
 - **Sort grid menu.** Lists the sort levels in order ("Sort by", "Then by"...). Each level is a row field, a column field, or the values in one column, with a direction. Levels can be added, reordered, removed or cleared.
 - **Group rows on:** each level is sorted within its parent. Sorting by values sorts the groups by their subtotal, then the rows inside each group.

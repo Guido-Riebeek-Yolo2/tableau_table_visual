@@ -647,6 +647,8 @@ function buildModel({ dims, measures, data }) {
     d.isDate = data.some(row => row[d.col].dt);
     if (d.isDate) d.times = entries.map(e => typeof e[1] === "number" ? e[1] : null);
   });
+  const measCols = new Set(measures.map(m => m.col));
+  ds.forEach(d => { d.rank = tableauRank(data, d, measCols); });
   const keys = new Set();
   const records = data.map(row => {
     const k = ds.map(d => d.index.get(row[d.col].f));
@@ -662,6 +664,35 @@ function buildModel({ dims, measures, data }) {
     dimPos: new Map(ds.map((d, i) => [d.id, i])),
     measById: new Map(ms.map((m, i) => [m.id, Object.assign(m, { index: i })]))
   };
+}
+
+// Tableau sends summary data in the sheet's sort order (manual sorts included). Rows that differ only in
+// this field show its order; members never compared that way keep their first-appearance order.
+function tableauRank(data, d, skip) {
+  const n = d.members.length, first = new Array(n).fill(-1), indeg = new Array(n).fill(0);
+  const next = Array.from({ length: n }, () => new Set());
+  const ctxCols = data.length ? data[0].map((_, i) => i).filter(i => i !== d.col && !skip.has(i)) : [];
+  const last = new Map();
+  data.forEach((row, r) => {
+    const m = d.index.get(row[d.col].f);
+    if (first[m] < 0) first[m] = r;
+    const ctx = ctxCols.map(i => row[i].f).join("\u0001");
+    const p = last.get(ctx);
+    if (p != null && p !== m && !next[p].has(m)) { next[p].add(m); indeg[m]++; }
+    last.set(ctx, m);
+  });
+  const byFirst = [...Array(n).keys()].sort((a, b) => first[a] - first[b]);
+  const rank = new Array(n), done = new Array(n).fill(false);
+  let lo = 0;
+  for (let k = 0; k < n; k++) {
+    while (done[byFirst[lo]]) lo++;
+    let j = lo;
+    while (j < n && (done[byFirst[j]] || indeg[byFirst[j]] > 0)) j++;
+    const m = byFirst[j < n ? j : lo];   // no ready member means the rows weren't consistently sorted
+    done[m] = true; rank[m] = k;
+    for (const x of next[m]) indeg[x]--;
+  }
+  return rank;
 }
 
 /* ============================================================
@@ -718,6 +749,9 @@ const totalAtEnd = key => (layout.totals.positions || {})[key] === "end" ||
   (!(key in (layout.totals.positions || {})) && layout.totals.atEnd);
 const totalMeasures = (totals, axis) => Array.isArray(totals.measures) ? totals.measures :
   Array.isArray(totals.measures?.[axis]) ? totals.measures[axis] : null;
+// Compares member indices of the dim at `pos` in a sort direction: asc, desc or tableau.
+const memberCmp = (pos, dir) => dir === "tableau" ? (a, b) => model.dims[pos].rank[a] - model.dims[pos].rank[b]
+  : dir === "desc" ? (a, b) => b - a : (a, b) => a - b;
 
 /* ============================================================
    PIVOT
@@ -767,7 +801,7 @@ function comparisonAt(fixed, mIdx) {
   let members = axis.members.get(partition);
   if (!members) {
     members = [...new Set(model.records.filter(record => parents.every(([pos, member]) => record.k[pos] === member))
-      .map(record => record.k[cfg.pos]))].sort((first, second) => axis.desc ? second - first : first - second);
+      .map(record => record.k[cfg.pos]))].sort(axis.cmp);
     axis.members.set(partition, members);
   }
   const at = members.indexOf(current[1]), adjacent = at + cfg.offset;
@@ -888,7 +922,7 @@ function buildGrid() {
   const rowLv = activeLevels(layout.rows, vis), colLv = activeLevels(layout.cols, vis);
   comparisonAxes = new Map([rowLv, colLv].flatMap(levels => levels.flatMap((id, level) => id === MEAS ? [] :
     [[model.dimPos.get(id), { parents: levels.slice(0, level).filter(parent => parent !== MEAS).map(parent => model.dimPos.get(parent)),
-      desc: layout.sort.some(key => key.type === "dim" && key.id === id && key.dir === "desc"), members: new Map() }]])));
+      cmp: memberCmp(model.dimPos.get(id), layout.sort.find(key => key.type === "dim" && key.id === id)?.dir), members: new Map() }]])));
   const rMeasAt = rowLv.indexOf(MEAS), cMeasAt = colLv.indexOf(MEAS);
   const selected = Object.fromEntries(["rows", "cols"].map(axis => {
     const ids = totalMeasures(layout.totals, axis);
@@ -906,7 +940,7 @@ function buildGrid() {
   const keys = layout.sort;   // ordered sort keys; earlier keys win, later ones break ties
   const dimOrder = lv => (L, prefix, members) => {
     const k = keys.find(k => k.type === "dim" && k.id === lv[L]);
-    return k && k.dir === "desc" ? members.slice().reverse() : members;
+    return k ? members.slice().sort(memberCmp(model.dimPos.get(k.id), k.dir)) : members;
   };
 
   const colItems = axisItems(colLv, vis, {
@@ -932,7 +966,7 @@ function buildGrid() {
     const cmps = [];
     for (const k of keys) {
       if (k.type === "dim") {
-        if (k.id === rowLv[L]) cmps.push((a, b) => k.dir === "asc" ? a - b : b - a);
+        if (k.id === rowLv[L]) cmps.push(memberCmp(model.dimPos.get(k.id), k.dir));
         continue;
       }
       const col = colBySig.get(k.sig);
@@ -962,7 +996,7 @@ function buildGrid() {
     for (const k of keys) {
       if (k.type === "dim") {
         const L = rowLv.indexOf(k.id);
-        if (L >= 0) cmps.push((a, b) => k.dir === "asc" ? a[L] - b[L] : b[L] - a[L]);
+        if (L >= 0) { const c = memberCmp(model.dimPos.get(k.id), k.dir); cmps.push((a, b) => c(a[L], b[L])); }
         continue;
       }
       const col = colBySig.get(k.sig);
@@ -1081,7 +1115,8 @@ function renderGrid() {
   const dimSortBtn = id => {
     if (id === MEAS) return "";
     const { dir, n } = keyState({ type: "dim", id });
-    return sortBtn(`data-sortdim="${esc(id)}"`, dir, dir === "asc" ? "Sort Z to A" : dir === "desc" ? "Remove this sort" : "Sort A to Z", n);
+    return sortBtn(`data-sortdim="${esc(id)}"`, dir, dir === "asc" ? "Sort Z to A" : dir === "desc" ? "Sort in Tableau's sort order"
+      : dir === "tableau" ? "Remove this sort" : "Sort A to Z", n);
   };
   const fieldTag = id =>
     `<span class="ftag" data-drag="${esc(id)}" data-kind="${id === MEAS ? "meas" : "dim"}" title="Drag to move">${esc(levelName(id))}</span>${dimSortBtn(id)}`;
@@ -1178,7 +1213,8 @@ function renderGrid() {
 const SORT_ICON = {
   "":   `<svg width="11" height="11" viewBox="0 0 12 12" aria-hidden="true"><path d="M4 1.5v9M1.8 8.3 4 10.5l2.2-2.2M8 10.5v-9M5.8 3.7 8 1.5l2.2 2.2" fill="none" stroke="currentColor" stroke-width="1.2"/></svg>`,
   desc: `<svg width="11" height="11" viewBox="0 0 12 12" aria-hidden="true"><path d="M6 1.5v9M2.5 7 6 10.5 9.5 7" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>`,
-  asc:  `<svg width="11" height="11" viewBox="0 0 12 12" aria-hidden="true"><path d="M6 10.5v-9M2.5 5 6 1.5 9.5 5" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>`
+  asc:  `<svg width="11" height="11" viewBox="0 0 12 12" aria-hidden="true"><path d="M6 10.5v-9M2.5 5 6 1.5 9.5 5" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>`,
+  tableau: `<svg width="11" height="11" viewBox="0 0 12 12" aria-hidden="true"><path d="M1.5 2.5h9M1.5 6h5M1.5 9.5h7" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>`
 };
 const foldBtn = (attrs, open, title) =>
   `<button class="fold" ${attrs} aria-expanded="${open}" title="${esc(title)}" aria-label="${esc(title)}">` +
@@ -1282,7 +1318,8 @@ function cleanLayout(o) {
     .filter(([id, pos]) => id.length <= 300 && (pos === "start" || pos === "end")).slice(0, 200));
   const sort = (Array.isArray(o.sort) ? o.sort : []).slice(0, 20)
     .filter(k => k && ((k.type === "dim" && typeof k.id === "string") || (k.type === "val" && typeof k.sig === "string")))
-    .map(k => ({ ...(k.type === "dim" ? { type: "dim", id: k.id } : { type: "val", sig: k.sig }), dir: k.dir === "desc" ? "desc" : "asc" }));
+    .map(k => ({ ...(k.type === "dim" ? { type: "dim", id: k.id } : { type: "val", sig: k.sig }),
+      dir: k.dir === "desc" ? "desc" : k.dir === "tableau" && k.type === "dim" ? "tableau" : "asc" }));
   return { rows, cols, measures, hidden: ids(o.hidden), removed, grouped: o.grouped !== false, expand: o.expand === true,
     open: { depth: Math.max(0, Math.min(20, parseInt(o.open && o.open.depth) || 0)), flip: (seen.clear(), ids(o.open && o.open.flip, 1000)) },
     dec: Math.max(-MAX_DEC, Math.min(MAX_DEC, parseInt(o.dec) || 0)),
@@ -1419,13 +1456,15 @@ const keyValue = k => (k.type === "dim" ? "d:" : "v:") + (k.type === "dim" ? k.i
 const keyFromValue = v => v.startsWith("d:") ? { type: "dim", id: v.slice(2), dir: "asc" } : { type: "val", sig: v.slice(2), dir: "desc" };
 let lastGrid = null;
 
-// Header buttons: an unsorted field becomes the first key; then reverse; then remove.
-function cycleSort(target, first) {
+// Header buttons: an unsorted field becomes the first key; each click moves to the next direction, then removes it.
+function cycleSort(target, steps) {
   const list = structuredClone(layout.sort);
   const i = list.findIndex(k => sameKey(k, target));
-  if (i < 0) list.unshift({ ...target, dir: first });
-  else if (list[i].dir === first) list[i].dir = first === "asc" ? "desc" : "asc";
-  else list.splice(i, 1);
+  if (i < 0) list.unshift({ ...target, dir: steps[0] });
+  else {
+    const next = steps[steps.indexOf(list[i].dir) + 1];
+    if (next) list[i].dir = next; else list.splice(i, 1);
+  }
   commit({ ...structuredClone(layout), sort: list });
 }
 $("grid").addEventListener("click", e => {
@@ -1437,8 +1476,8 @@ $("grid").addEventListener("click", e => {
   }
   const b = e.target.closest("button.sort");
   if (!b || !layout) return;
-  if (b.dataset.sortdim) cycleSort({ type: "dim", id: b.dataset.sortdim }, "asc");
-  else cycleSort({ type: "val", sig: b.dataset.sig }, "desc");
+  if (b.dataset.sortdim) cycleSort({ type: "dim", id: b.dataset.sortdim }, ["asc", "desc", "tableau"]);
+  else cycleSort({ type: "val", sig: b.dataset.sig }, ["desc", "asc"]);
 });
 
 function sortOptions() {
@@ -1459,7 +1498,7 @@ function renderSortMenu() {
   const options = sel => groups.filter(g => g[1].length).map(([label, list]) =>
     `<optgroup label="${label}">${list.map(o => `<option value="${esc(o.v)}"${o.v === sel ? " selected" : ""}>${esc(o.t)}</option>`).join("")}</optgroup>`
   ).join("") + (known.has(sel) ? "" : `<option value="${esc(sel)}" selected>Not in the grid</option>`);
-  const dirs = k => (k.type === "dim" ? [["asc", "A to Z"], ["desc", "Z to A"]] : [["desc", "Largest first"], ["asc", "Smallest first"]])
+  const dirs = k => (k.type === "dim" ? [["asc", "A to Z"], ["desc", "Z to A"], ["tableau", "Tableau sort order"]] : [["desc", "Largest first"], ["asc", "Smallest first"]])
     .map(([v, t]) => `<option value="${v}"${k.dir === v ? " selected" : ""}>${t}</option>`).join("");
   const rows = keys.map((k, i) => `<div class="sk-row">
       <span class="lvl">${i ? "Then by" : "Sort by"}</span>
@@ -2633,6 +2672,8 @@ async function loadFromTableau() {
     table.isTotalRowCountLimited ? `Only the first ${data.length.toLocaleString()} rows were loaded. Add filters to the sheet to see everything.` : ""
   ].filter(Boolean).join(" ");
   const m = buildModel({ dims, measures, data });
+  diagLines.push("TABLEAU SORT ORDER (from summary data row order)\n" + m.dims.map(d => "  " + d.id + ": " +
+    d.members.map((name, i) => [d.rank[i], name]).sort((a, b) => a[0] - b[0]).slice(0, 15).map(e => e[1]).join(" | ")).join("\n"));
   applyParams(m);
   diagLines.push("PARAMETER LABELS\n" + ([...m.dims, ...m.measures].filter(f => f.param)
     .map(f => `  ${f.id} <- ${f.param}: ${f.off ? "hidden (none)" : f.label}`).join("\n") || "  –"));
