@@ -635,7 +635,7 @@ function inferFormat(cells) {
    measures: [{ id, label, col, axis }]  axis = "values" | "fields"
    data:     rows of cells { f: formatted text, s: sort key }
    ============================================================ */
-function buildModel({ dims, measures, data }) {
+function buildModel({ dims, measures, data, rowsReversed }) {
   const ds = dims.map(d => ({ ...d, baseLabel: d.label, members: [], index: new Map() }));
   ds.forEach(d => {
     const seen = new Map();
@@ -648,7 +648,8 @@ function buildModel({ dims, measures, data }) {
     if (d.isDate) d.times = entries.map(e => typeof e[1] === "number" ? e[1] : null);
   });
   const measCols = new Set(measures.map(m => m.col));
-  ds.forEach(d => { d.rank = tableauRank(data, d, measCols); });
+  const viewRows = rowsReversed ? data.slice().reverse() : data;
+  ds.forEach(d => { d.rank = tableauRank(viewRows, d, measCols); });
   const keys = new Set();
   const records = data.map(row => {
     const k = ds.map(d => d.index.get(row[d.col].f));
@@ -2671,7 +2672,8 @@ async function loadFromTableau() {
     missing.length ? "Some fields could not be read from the sheet: " + missing.join(", ") + ". Open with ?debug=1 for details." : "",
     table.isTotalRowCountLimited ? `Only the first ${data.length.toLocaleString()} rows were loaded. Add filters to the sheet to see everything.` : ""
   ].filter(Boolean).join(" ");
-  const m = buildModel({ dims, measures, data });
+  // Summary data arrives in the reverse of the sheet's sort order.
+  const m = buildModel({ dims, measures, data, rowsReversed: true });
   diagLines.push("TABLEAU SORT ORDER (from summary data row order)\n" + m.dims.map(d => "  " + d.id + ": " +
     d.members.map((name, i) => [d.rank[i], name]).sort((a, b) => a[0] - b[0]).slice(0, 15).map(e => e[1]).join(" | ")).join("\n"));
   applyParams(m);
