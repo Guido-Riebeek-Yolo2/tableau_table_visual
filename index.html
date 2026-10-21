@@ -647,9 +647,9 @@ function buildModel({ dims, measures, data, rowsReversed }) {
     d.isDate = data.some(row => row[d.col].dt);
     if (d.isDate) d.times = entries.map(e => typeof e[1] === "number" ? e[1] : null);
   });
-  const measCols = new Set(measures.map(m => m.col));
   const viewRows = rowsReversed ? data.slice().reverse() : data;
-  ds.forEach(d => { d.rank = tableauRank(viewRows, d, measCols); });
+  const ranked = tableauRanks(viewRows, ds, new Set(measures.map(m => m.col)));
+  ds.forEach((d, i) => { d.rank = ranked.ranks[i]; });
   const keys = new Set();
   const records = data.map(row => {
     const k = ds.map(d => d.index.get(row[d.col].f));
@@ -661,39 +661,60 @@ function buildModel({ dims, measures, data, rowsReversed }) {
     sample: (data.find(r => typeof r[m.col].s === "number" && r[m.col].s) || [])[m.col]?.s
   }));
   return {
-    dims: ds, measures: ms, records, dupes: records.length - keys.size,
+    dims: ds, measures: ms, records, dupes: records.length - keys.size, rankSource: ranked.source,
     dimPos: new Map(ds.map((d, i) => [d.id, i])),
     measById: new Map(ms.map((m, i) => [m.id, Object.assign(m, { index: i })]))
   };
 }
 
-// Tableau sends summary data in the sheet's sort order (manual sorts included). Rows that differ only in
-// this field show its order; members never compared that way keep their first-appearance order.
-function tableauRank(data, d, skip) {
-  const n = d.members.length, first = new Array(n).fill(-1), indeg = new Array(n).fill(0);
+// Orders members from observed [before, after] pairs; members never compared keep first-appearance order.
+function rankFrom(n, pairs, seq) {
+  const first = new Array(n).fill(-1), indeg = new Array(n).fill(0);
   const next = Array.from({ length: n }, () => new Set());
-  const ctxCols = data.length ? data[0].map((_, i) => i).filter(i => i !== d.col && !skip.has(i)) : [];
-  const last = new Map();
-  data.forEach((row, r) => {
-    const m = d.index.get(row[d.col].f);
-    if (first[m] < 0) first[m] = r;
-    const ctx = ctxCols.map(i => row[i].f).join("\u0001");
-    const p = last.get(ctx);
-    if (p != null && p !== m && !next[p].has(m)) { next[p].add(m); indeg[m]++; }
-    last.set(ctx, m);
-  });
+  seq.forEach((m, r) => { if (first[m] < 0) first[m] = r; });
+  for (const [a, b] of pairs) if (a !== b && !next[a].has(b)) { next[a].add(b); indeg[b]++; }
   const byFirst = [...Array(n).keys()].sort((a, b) => first[a] - first[b]);
   const rank = new Array(n), done = new Array(n).fill(false);
-  let lo = 0;
+  let lo = 0, ok = true;
   for (let k = 0; k < n; k++) {
     while (done[byFirst[lo]]) lo++;
     let j = lo;
     while (j < n && (done[byFirst[j]] || indeg[byFirst[j]] > 0)) j++;
-    const m = byFirst[j < n ? j : lo];   // no ready member means the rows weren't consistently sorted
+    if (j === n) { ok = false; j = lo; }   // a cycle: the pairs don't come from one consistent order
+    const m = byFirst[j];
     done[m] = true; rank[m] = k;
     for (const x of next[m]) indeg[x]--;
   }
-  return rank;
+  return { rank, ok };
+}
+
+// Tableau sends summary data sorted field by field in the sheet's sort order (manual sorts included), so the
+// field in which two consecutive rows first differ shows that field's order. Which field Tableau sorts by first
+// isn't known: try rows-first, then columns-first, and keep the first consistent one. Otherwise fall back to
+// rows that differ in this field only.
+function tableauRanks(rows, ds, measCols) {
+  const mem = rows.map(row => ds.map(d => d.index.get(row[d.col].f)));
+  const seqs = ds.map((_, i) => mem.map(m => m[i]));
+  const [r, c, f] = ["rows", "cols", "fields"].map(ax => ds.map((d, i) => d.axis === ax ? i : -1).filter(i => i >= 0));
+  for (const [source, order] of [["rows first", [...r, ...c, ...f]], ["columns first", [...c, ...r, ...f]]]) {
+    const pairs = ds.map(() => []);
+    for (let k = 1; k < mem.length; k++) {
+      const p = order.find(i => mem[k][i] !== mem[k - 1][i]);
+      if (p != null) pairs[p].push([mem[k - 1][p], mem[k][p]]);
+    }
+    const res = ds.map((d, i) => rankFrom(d.members.length, pairs[i], seqs[i]));
+    if (res.every(x => x.ok)) return { source, ranks: res.map(x => x.rank) };
+  }
+  const other = rows.length ? rows[0].map((_, j) => j).filter(j => !measCols.has(j)) : [];
+  return { source: "single-field differences", ranks: ds.map((d, i) => {
+    const ctxCols = other.filter(j => j !== d.col), last = new Map(), pairs = [];
+    rows.forEach((row, k) => {
+      const ctx = ctxCols.map(j => row[j].f).join("\u0001"), p = last.get(ctx);
+      if (p != null) pairs.push([p, mem[k][i]]);
+      last.set(ctx, mem[k][i]);
+    });
+    return rankFrom(d.members.length, pairs, seqs[i]).rank;
+  }) };
 }
 
 /* ============================================================
@@ -2674,7 +2695,7 @@ async function loadFromTableau() {
   ].filter(Boolean).join(" ");
   // Summary data arrives in the reverse of the sheet's sort order.
   const m = buildModel({ dims, measures, data, rowsReversed: true });
-  diagLines.push("TABLEAU SORT ORDER (from summary data row order)\n" + m.dims.map(d => "  " + d.id + ": " +
+  diagLines.push(`TABLEAU SORT ORDER (from summary data row order, ${m.rankSource})\n` + m.dims.map(d => "  " + d.id + ": " +
     d.members.map((name, i) => [d.rank[i], name]).sort((a, b) => a[0] - b[0]).slice(0, 15).map(e => e[1]).join(" | ")).join("\n"));
   applyParams(m);
   diagLines.push("PARAMETER LABELS\n" + ([...m.dims, ...m.measures].filter(f => f.param)
