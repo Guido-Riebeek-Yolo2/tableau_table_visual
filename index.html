@@ -116,6 +116,11 @@
   #notice { flex: none; padding: 5px 10px; background: #f2f7fa; color: var(--ink-2); border-bottom: 1px solid var(--line); }
   #notice:empty { display: none; }
   #notice.error { background: #fbf0ef; color: #a2403a; }
+  #pageBar { flex: none; display: flex; align-items: center; gap: 4px; padding: 4px 10px; border-bottom: 1px solid var(--line); background: var(--head); }
+  #pageField, #pageCount { color: var(--ink-2); }
+  #pageField { margin-right: 4px; }
+  #pageCount { margin-left: 4px; }
+  #pageSelect { height: 23px; min-width: 120px; max-width: 320px; font: inherit; color: var(--ink); background: var(--bg); border: 1px solid var(--line-strong); border-radius: 3px; padding: 0 4px; }
 
   /* ---------- field list ---------- */
   #main { flex: 1; display: flex; min-height: 0; }
@@ -410,6 +415,13 @@
       </span>
       <div class="pills" id="pillsRows"></div>
     </div>
+    <div class="shelf" data-zone="pages">
+      <span class="shelf-label">
+        <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path d="M4 1.5h6.5v7M1.5 4h6.5v6.5H1.5z" fill="none" stroke="currentColor" stroke-width="1.3"/></svg>
+        Pages
+      </span>
+      <div class="pills" id="pillsPages"></div>
+    </div>
     <div class="shelf" data-zone="values">
       <span class="shelf-label">
         <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path d="M9.5 1.5h-7l3.5 4.5-3.5 4.5h7" fill="none" stroke="currentColor" stroke-width="1.3"/></svg>
@@ -419,6 +431,15 @@
     </div>
   </section>
   <div id="notice"></div>
+  <div id="pageBar" role="navigation" aria-label="Pages" hidden>
+    <span id="pageField"></span>
+    <button class="ib" id="pagePrev" title="Previous page" aria-label="Previous page">
+      <svg width="10" height="10" viewBox="0 0 12 12" aria-hidden="true"><path d="M7.5 2.5 4 6l3.5 3.5" fill="none" stroke="currentColor" stroke-width="1.5"/></svg></button>
+    <select id="pageSelect" aria-label="Page"></select>
+    <button class="ib" id="pageNext" title="Next page" aria-label="Next page">
+      <svg width="10" height="10" viewBox="0 0 12 12" aria-hidden="true"><path d="M4.5 2.5 8 6l-3.5 3.5" fill="none" stroke="currentColor" stroke-width="1.5"/></svg></button>
+    <span id="pageCount"></span>
+  </div>
   <div id="main">
     <aside id="side" aria-label="Field list" hidden>
       <div class="side-head">
@@ -513,7 +534,8 @@ const natural = new Intl.Collator(undefined, { numeric: true, sensitivity: "base
 const cmpKey = (a, b) => (typeof a === "number" && typeof b === "number") ? a - b : natural.compare(String(a), String(b));
 
 let model = null;      // the sheet's data, independent of layout
-let layout = null;     // { rows, cols, measures, hidden, removed, grouped, expand, open, totals: { sub, grandRows, grandCols, atEnd, positions, measures }, sort }
+let layout = null;     // { rows, cols, pages, measures, hidden, removed, grouped, expand, open, totals: { sub, grandRows, grandCols, atEnd, positions, measures }, sort }
+let curPage = null;    // key of the page shown when fields are on Pages; session only
 // layout.open: row groups open with Expand rows on. Levels below `depth` start open; `flip` holds "level:path" exceptions.
 let picked = new Map(), anchor = null;   // selected value cells: "row,col" -> td; anchor = [row, col] for Shift+click
 let worksheet = null;
@@ -750,7 +772,7 @@ function defaultLayout() {
     list.splice(at, 0, MEAS);
   }
   return {
-    rows, cols, measures: model.measures.filter(m => m.axis !== "fields").map(m => m.id), hidden: [], removed: [],
+    rows, cols, pages: [], measures: model.measures.filter(m => m.axis !== "fields").map(m => m.id), hidden: [], removed: [],
     grouped: true, expand: false, open: { depth: 0, flip: [] }, dec: 0,
     totals: { sub: [], grandRows: false, grandCols: false, atEnd: false, positions: {}, measures: { rows: null, cols: null } },  // sub: field ids with subtotals, on whichever axis
     sort: []     // ordered keys: { type: "dim", id, dir } | { type: "val", sig: column signature, dir }
@@ -770,9 +792,10 @@ function reconcile(old, prev) {
   const keepDim = id => id === MEAS ? model.measures.length > 0 : dimIds.has(id) && !authorMoved.has(id);
   const keepMeas = id => model.measById.has(id) && !authorMoved.has(id);
   const rows = old.rows.filter(keepDim), cols = old.cols.filter(keepDim);
+  const pages = (old.pages || []).filter(id => id !== MEAS && keepDim(id));
   const measures = old.measures.filter(keepMeas);
   const removed = old.removed.filter(id => keepDim(id) || keepMeas(id));
-  const placed = new Set([...rows, ...cols, ...measures, ...removed]);
+  const placed = new Set([...rows, ...cols, ...pages, ...measures, ...removed]);
   def.rows.forEach(id => { if (!placed.has(id)) rows.push(id); });
   def.cols.forEach(id => { if (!placed.has(id)) cols.push(id); });
   def.measures.forEach(id => { if (!placed.has(id)) measures.push(id); });
@@ -782,7 +805,26 @@ function reconcile(old, prev) {
       id === "grandRows" || id === "grandCols" || id === MEAS || dimIds.has(id))),
     measures: Object.fromEntries(["rows", "cols"].map(axis => [axis, totalMeasures(old.totals, axis)?.filter(id => model.measById.has(id)) ?? null])) };
   const sort = (Array.isArray(old.sort) ? old.sort : []).filter(k => k.type !== "dim" || dimIds.has(k.id));
-  return { rows, cols, measures, hidden, removed, grouped: old.grouped, expand: !!old.expand, open: old.open || def.open, dec: old.dec || 0, totals, sort };
+  return { rows, cols, pages, measures, hidden, removed, grouped: old.grouped, expand: !!old.expand, open: old.open || def.open, dec: old.dec || 0, totals, sort };
+}
+
+const activePages = () => layout.pages.filter(id => !isOff(id));
+const memberLabel = (pos, m) => { const d = model.dims[pos]; return d.labels ? d.labels[m] : d.members[m]; };
+// One page per combination of the Pages fields that exists in the data, in member order.
+function pageList() {
+  const pos = activePages().map(id => model.dimPos.get(id));
+  if (!pos.length) return [];
+  const combos = new Map();
+  for (const r of model.records) {
+    const k = pos.map(p => r.k[p]), key = k.join(",");
+    if (!combos.has(key)) combos.set(key, k);
+  }
+  return [...combos.values()]
+    .sort((a, b) => { for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return a[i] - b[i]; return 0; })
+    .map(k => {
+      const labels = k.map((m, i) => memberLabel(pos[i], m));
+      return { fx: k.map((m, i) => [pos[i], m]), labels, key: labels.join("\u0001"), name: labels.map(l => l === "" ? "(blank)" : l).join(" / ") };
+    });
 }
 
 const visibleMeasures = () => layout.measures.filter(id => !layout.hidden.includes(id) && !isOff(id)).map(id => model.measById.get(id));
@@ -803,12 +845,12 @@ const memberCmp = (pos, dir) => dir === "tableau" ? (a, b) => model.dims[pos].ra
    the axis levels; the Measure Names level holds a visible-measure index.
    Only combinations that exist in the data are produced, as in Tableau.
    ============================================================ */
-function axisTuples(levels, vis) {
+function axisTuples(levels, vis, records = model.records) {
   if (!levels.length) return [[]];
   const pos = levels.map(id => id === MEAS ? -1 : model.dimPos.get(id));
   const dimAt = pos.map((p, i) => p >= 0 ? i : -1).filter(i => i >= 0);
   const combos = new Map();
-  for (const r of model.records) {
+  for (const r of records) {
     const t = dimAt.map(i => r.k[pos[i]]);
     const key = t.join(",");
     if (!combos.has(key)) combos.set(key, t);
@@ -917,10 +959,10 @@ const numOrNull = c => typeof c.s === "number" && isFinite(c.s) ? c.s : null;
 /* One item per header path on an axis, in display order, totals included.
    t:   member index per level; -1 = all members (a total); the Measure Names level holds a visible-measure index.
    tot: null for data paths, else the level being totalled (-1 = grand total).
-  opt: { sub: Set of levels with subtotals, grand, atEnd(L), includeMeasure(i), hasMeasures, order(L, prefix, members), flatCmp, fold: { can(L), open(L, prefix) } }
+  opt: { sub: Set of levels with subtotals, grand, atEnd(L), includeMeasure(i), hasMeasures, order(L, prefix, members), flatCmp, fold: { can(L), open(L, prefix) }, records }
    A closed group is one row per measure at that level (fold: L), like a subtotal without the Total label. */
 function axisItems(levels, vis, opt) {
-  const tuples = axisTuples(levels, vis);
+  const tuples = axisTuples(levels, vis, opt.records);
   const measAt = levels.indexOf(MEAS);
   const dimAfter = L => levels.slice(L + 1).some(id => id !== MEAS);
   const totalsFor = (L, prefix, filtered = true) => {
@@ -959,13 +1001,19 @@ function axisItems(levels, vis, opt) {
   return items;
 }
 
-/* Everything the screen and the export need, from the current layout. */
-function buildGrid() {
-  views = new Map(); blanked = new Set(); comparisonCells = new Map();
+/* Everything the screen and the export need, from the current layout.
+   With fields on Pages, only that page's records are shown and every value is fixed to its members.
+   keepCache: reuse cell caches from the previous call (the export builds every page in a row). */
+function buildGrid(pageKey = curPage, keepCache = false) {
+  if (!keepCache) { views = new Map(); blanked = new Set(); comparisonCells = new Map(); }
+  const pages = pageList(), pageLv = activePages();
+  const pageIdx = Math.max(0, pages.findIndex(p => p.key === pageKey));
+  const page = pages[pageIdx] || null, pageFx = page ? page.fx : [];
+  const records = page ? model.records.filter(r => pageFx.every(([p, m]) => r.k[p] === m)) : model.records;
   const vis = visibleMeasures();
   const rowLv = activeLevels(layout.rows, vis), colLv = activeLevels(layout.cols, vis);
   comparisonAxes = new Map([rowLv, colLv].flatMap(levels => levels.flatMap((id, level) => id === MEAS ? [] :
-    [[model.dimPos.get(id), { parents: levels.slice(0, level).filter(parent => parent !== MEAS).map(parent => model.dimPos.get(parent)),
+    [[model.dimPos.get(id), { parents: [...pageFx.map(f => f[0]), ...levels.slice(0, level).filter(parent => parent !== MEAS).map(parent => model.dimPos.get(parent))],
       cmp: memberCmp(model.dimPos.get(id), layout.sort.find(key => key.type === "dim" && key.id === id)?.dir), members: new Map() }]])));
   const rMeasAt = rowLv.indexOf(MEAS), cMeasAt = colLv.indexOf(MEAS);
   const selected = Object.fromEntries(["rows", "cols"].map(axis => {
@@ -989,7 +1037,7 @@ function buildGrid() {
 
   const colItems = axisItems(colLv, vis, {
     sub: subOf(colLv), grand: layout.totals.grandCols, atEnd: L => totalAtEnd(L < 0 ? "grandCols" : colLv[L]),
-    includeMeasure: mi => includeMeasure("cols", mi), hasMeasures: hasMeasures("cols"), order: dimOrder(colLv)
+    includeMeasure: mi => includeMeasure("cols", mi), hasMeasures: hasMeasures("cols"), order: dimOrder(colLv), records
   });
   colItems.forEach(c => { c.fx = fixedOf(colLv, c.t); });
   const colSig = c => colLv.map((id, i) => id + "=" + (c.t[i] < 0 ? "*" : id === MEAS ? vis[c.t[i]].id : label(id, c.t[i])))
@@ -1001,7 +1049,7 @@ function buildGrid() {
     const mi = rMeasAt >= 0 ? rt[rMeasAt] : cMeasAt >= 0 ? c.t[cMeasAt] : -1;
     if (mi == null || mi < 0 || !vis[mi]) return EMPTY;
     if (c.tot != null && !includeMeasure("cols", mi)) return EMPTY;
-    return cellAt([...rFixed, ...c.fx].sort((a, b) => a[0] - b[0]), vis[mi].index);
+    return cellAt([...rFixed, ...c.fx, ...pageFx].sort((a, b) => a[0] - b[0]), vis[mi].index);
   };
   const chain = cmps => (a, b) => { for (const c of cmps) { const d = c(a, b); if (d) return d; } return 0; };
 
@@ -1069,7 +1117,7 @@ function buildGrid() {
   const rowItems = axisItems(rowLv, vis, {
     sub: rowSub, grand: layout.totals.grandRows, atEnd: L => totalAtEnd(L < 0 ? "grandRows" : rowLv[L]),
     includeMeasure: mi => includeMeasure("rows", mi), hasMeasures: hasMeasures("rows"), order: rowOrder, flatCmp,
-    fold: foldOn ? { can: canFold, open: isOpen } : null
+    fold: foldOn ? { can: canFold, open: isOpen } : null, records
   });
   rowItems.forEach(r => { r.fx = fixedOf(rowLv, r.t); });
 
@@ -1085,7 +1133,7 @@ function buildGrid() {
     return f && layout.dec ? f.withDec(layout.dec) : f;
   });
   return {
-    vis, rowLv, colLv, rowItems, colItems, text,
+    vis, rowLv, colLv, rowItems, colItems, text, pages, pageIdx, page, pageLv,
     cell: (r, c) => {
       const mi = rMeasAt >= 0 ? r.t[rMeasAt] : cMeasAt >= 0 ? c.t[cMeasAt] : -1;
       if (r.tot != null && !includeMeasure("rows", mi) || c.tot != null && !includeMeasure("cols", mi)) return EMPTY;
@@ -1136,6 +1184,7 @@ function render() {
 function renderGrid() {
   hideTip();
   renderShelves();
+  $("pageBar").hidden = true;
   const app = $("app");
   if (!model || !model.dims.length && !model.measures.length) {
     return showEmpty("Add fields to start",
@@ -1148,6 +1197,8 @@ function renderGrid() {
 
   const g = buildGrid();
   lastGrid = g;
+  curPage = g.page ? g.page.key : null;
+  renderPageBar(g);
   const { vis, rowLv, colLv, rowItems, colItems, text } = g;
   const nRH = Math.max(rowLv.length, 1), nCH = Math.max(colLv.length, 1);
   const keys = layout.sort;
@@ -1267,6 +1318,21 @@ const foldBtn = (attrs, open, title) =>
 const sortBtn = (attrs, dir, title, n) =>
   `<button class="sort${dir ? " on" : ""}" ${attrs} title="${esc(title)}" aria-label="${esc(title)}">${SORT_ICON[dir]}${n}</button>`;
 
+function renderPageBar(g) {
+  $("pageBar").hidden = !g.page;
+  $("btnExport").title = g.page ? "Download every page as its own worksheet in one Excel file" : "Download the grid as shown as an Excel file";
+  if (!g.page) return;
+  $("pageField").textContent = g.pageLv.map(levelName).join(" / ");
+  $("pageSelect").innerHTML = g.pages.map((p, i) => `<option value="${i}"${i === g.pageIdx ? " selected" : ""}>${esc(p.name)}</option>`).join("");
+  $("pagePrev").disabled = g.pageIdx === 0;
+  $("pageNext").disabled = g.pageIdx === g.pages.length - 1;
+  $("pageCount").textContent = `${g.pageIdx + 1} of ${g.pages.length}`;
+}
+const goPage = i => { const p = lastGrid && lastGrid.pages[i]; if (p) { curPage = p.key; render(); } };
+$("pageSelect").onchange = e => goPage(+e.target.value);
+$("pagePrev").onclick = () => lastGrid && goPage(lastGrid.pageIdx - 1);
+$("pageNext").onclick = () => lastGrid && goPage(lastGrid.pageIdx + 1);
+
 // Sticky header rows and row-header columns need pixel offsets.
 function measureSticky() {
   const grid = $("grid");
@@ -1287,13 +1353,15 @@ function renderShelves() {
   const empty = `<span class="ph">Drag fields here</span>`;
   $("pillsCols").innerHTML = layout.cols.filter(id => !isOff(id)).map(pill).join("") || empty;
   $("pillsRows").innerHTML = layout.rows.filter(id => !isOff(id)).map(pill).join("") || empty;
+  $("pillsPages").innerHTML = layout.pages.filter(id => !isOff(id)).map(pill).join("") ||
+    `<span class="ph">Drag a field here to show one page per value</span>`;
   $("pillsValues").innerHTML = layout.measures.filter(id => !isOff(id)).map(id => {
     const off = layout.hidden.includes(id);
     return `<span class="pill measure${off ? " off" : ""}" tabindex="0" data-drag="${esc(id)}" data-kind="measure" data-id="${esc(id)}"
       title="Drag to reorder. Click to ${off ? "show" : "hide"}.">${esc(model.measById.get(id).label)}</span>`;
   }).join("") || `<span class="ph">Drag measures here</span>`;
 
-  const availDims = model ? model.dims.filter(d => !d.off && !layout.rows.includes(d.id) && !layout.cols.includes(d.id)) : [];
+  const availDims = model ? model.dims.filter(d => !d.off && !layout.rows.includes(d.id) && !layout.cols.includes(d.id) && !layout.pages.includes(d.id)) : [];
   // LOD helper measures only feed totals, so they stay out of the field list.
   const helpers = new Set(model ? model.measures.flatMap(m => m.rule === "lod" ? m.lods.map(l => model.measures[l.idx].id) : []) : []);
   const availMeas = model ? model.measures.filter(m => !m.off && !m.helper && !helpers.has(m.id) && !layout.measures.includes(m.id)) : [];
@@ -1354,7 +1422,7 @@ function cleanLayout(o) {
   if (!o || typeof o !== "object") return null;
   const seen = new Set();
   const ids = (a, n = 200) => (Array.isArray(a) ? a : []).filter(x => typeof x === "string" && !seen.has(x) && seen.add(x)).slice(0, n);
-  const rows = ids(o.rows), cols = ids(o.cols), removed = ids(o.removed);
+  const rows = ids(o.rows), cols = ids(o.cols), pages = ids(o.pages, 10), removed = ids(o.removed);
   seen.clear();
   const measures = ids(o.measures);
   seen.clear();
@@ -1365,7 +1433,7 @@ function cleanLayout(o) {
     .filter(k => k && ((k.type === "dim" && typeof k.id === "string") || (k.type === "val" && typeof k.sig === "string")))
     .map(k => ({ ...(k.type === "dim" ? { type: "dim", id: k.id } : { type: "val", sig: k.sig }),
       dir: k.dir === "desc" ? "desc" : k.type === "dim" && (k.dir === "tableau" || k.dir === "tableauRev") ? k.dir : "asc" }));
-  return { rows, cols, measures, hidden: ids(o.hidden), removed, grouped: o.grouped !== false, expand: o.expand === true,
+  return { rows, cols, pages, measures, hidden: ids(o.hidden), removed, grouped: o.grouped !== false, expand: o.expand === true,
     open: { depth: Math.max(0, Math.min(20, parseInt(o.open && o.open.depth) || 0)), flip: (seen.clear(), ids(o.open && o.open.flip, 1000)) },
     dec: Math.max(-MAX_DEC, Math.min(MAX_DEC, parseInt(o.dec) || 0)),
     totals: { sub: (seen.clear(), ids(t.sub)), grandRows: !!t.grandRows, grandCols: !!t.grandCols, atEnd: !!t.atEnd,
@@ -1430,11 +1498,13 @@ function commit(next, movedId) {
   if (movedId) flash(movedId);
 }
 function moveField(id, zone, beforeId) {
-  const onGrid = layout.rows.includes(id) || layout.cols.includes(id);
+  const onGrid = layout.rows.includes(id) || layout.cols.includes(id) || layout.pages.includes(id);
   if (zone === "avail" && (id === MEAS || !onGrid)) return;
+  if (zone === "pages" && id === MEAS) return;
   const next = structuredClone(layout);
   next.rows = next.rows.filter(x => x !== id);
   next.cols = next.cols.filter(x => x !== id);
+  next.pages = next.pages.filter(x => x !== id);
   next.removed = next.removed.filter(x => x !== id);
   if (zone === "avail") { next.removed.push(id); commit(next, id); return; }
   const list = next[zone];
@@ -1601,7 +1671,8 @@ function cellTip(td) {
   const meas = g.vis[mi];
   if (!meas) return "";
   const cell = g.cell(it, ct);
-  return members(g.rowLv, it.t, it.tot, it.fold).join("") + members(g.colLv, ct.t, ct.tot).join("") +
+  const page = g.page ? g.pageLv.map((id, i) => line(levelName(id), g.page.labels[i])).join("") : "";
+  return page + members(g.rowLv, it.t, it.tot, it.fold).join("") + members(g.colLv, ct.t, ct.tot).join("") +
     `<div class="m">${line(meas.label, cell.f || "No value")}</div>`;
 }
 function placeTip(x, y) {
@@ -2399,57 +2470,28 @@ async function exportExcel() {
   btn.disabled = true;
   try {
     const XLSX = await loadXlsx();
-    const g = buildGrid();
-    const { rowLv, colLv, rowItems, colItems, text } = g;
-    const nRH = Math.max(rowLv.length, 1), nCH = Math.max(colLv.length, 1);
     const title = worksheet ? worksheet.name : "Pivot Grid";
     const now = new Date();
-    const aoa = [[title], ["Exported " + now.toLocaleString()], []];
-    const merges = [], top = aoa.length;
-    const merge = (r, c, rows, cols) => { if (rows > 1 || cols > 1) merges.push({ s: { r, c }, e: { r: r + rows - 1, c: c + cols - 1 } }); };
-
-    const cFD = firstDiff(colItems.map(c => c.t)), rFD = firstDiff(rowItems.map(r => r.t));
-    for (let L = 0; L < nCH; L++) {
-      const row = new Array(nRH + colItems.length).fill(null);
-      row[0] = colLv[L] ? levelName(colLv[L]) : "";
-      merge(top + L, 0, 1, nRH);
-      const runs = runLens(cFD, L);
-      for (let c = 0; c < colItems.length; c++) {
-        if (!runs[c]) continue;
-        row[nRH + c] = colLv.length ? text(colLv, colItems[c], L) : "";
-        merge(top + L, nRH + c, 1, runs[c]);
-      }
-      aoa.push(row);
-    }
-    aoa.push(rowLv.map(levelName));
-    const rRuns = rowLv.map((_, i) => runLens(rFD, i));
-    rowItems.forEach((it, r) => {
-      const row = [];
-      const at = aoa.length;
-      for (let i = 0; i < nRH; i++) {
-        if (!rowLv.length) { row.push(null); continue; }
-        const n = layout.grouped ? rRuns[i][r] : 1;
-        row.push(n ? text(rowLv, it, i) : null);
-        if (n) merge(at, i, n, 1);
-      }
-      for (const c of colItems) {
-        const cell = g.cell(it, c);
-        const mi = rowLv.includes(MEAS) ? it.t[rowLv.indexOf(MEAS)] : colLv.includes(MEAS) ? c.t[colLv.indexOf(MEAS)] : -1;
-        const meas = mi >= 0 && g.vis[mi];
-        const fmt = meas ? g.fmtOf(mi) : null;
-        row.push(typeof cell.s === "number" && isFinite(cell.s) ? { t: "n", v: cell.s, z: (fmt && fmt.xl) || "General" } : cell.f || null);
-      }
-      aoa.push(row);
-    });
-
-    const ws = XLSX.utils.aoa_to_sheet(aoa);
-    ws["!merges"] = merges;
-    const width = i => Math.min(60, Math.max(8, ...aoa.slice(top).map(r => {
-      const v = r[i]; return v == null ? 0 : String(typeof v === "object" ? (v.v ?? "") : v).length + 2;
-    })));
-    ws["!cols"] = Array.from({ length: nRH + colItems.length }, (_, i) => ({ wch: width(i) }));
     const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, title.replace(/[\\/?*:[\]]/g, " ").slice(0, 31) || "Sheet1");
+    const used = new Set();
+    // Excel sheet names: max 31 characters, no \ / ? * : [ ], unique ignoring case, "History" is reserved.
+    const sheetName = name => {
+      const base = String(name).replace(/[\\/?*:[\]]/g, " ").replace(/^'+|'+$/g, "").trim().slice(0, 31) || "Sheet";
+      let n = base, k = 1;
+      while (used.has(n.toLowerCase()) || n.toLowerCase() === "history") { const s = ` (${++k})`; n = base.slice(0, 31 - s.length) + s; }
+      used.add(n.toLowerCase());
+      return n;
+    };
+    const pages = pageList();
+    if (pages.length) {
+      pages.forEach((p, i) => {
+        const g = buildGrid(p.key, i > 0);
+        const sub = g.pageLv.map((id, j) => `${levelName(id)}: ${p.labels[j]}`).join(", ");
+        XLSX.utils.book_append_sheet(wb, gridSheet(XLSX, g, [[title], [sub], ["Exported " + now.toLocaleString()], []]), sheetName(p.name));
+      });
+    } else {
+      XLSX.utils.book_append_sheet(wb, gridSheet(XLSX, buildGrid(), [[title], ["Exported " + now.toLocaleString()], []]), sheetName(title));
+    }
     const day = now.toISOString().slice(0, 10);
     XLSX.writeFile(wb, `${title.replace(/[\\/:*?"<>|]+/g, "_")}_${day}.xlsx`);
   } catch (err) {
@@ -2458,6 +2500,54 @@ async function exportExcel() {
   } finally {
     btn.disabled = false;
   }
+}
+function gridSheet(XLSX, g, aoa) {
+  const { rowLv, colLv, rowItems, colItems, text } = g;
+  const nRH = Math.max(rowLv.length, 1), nCH = Math.max(colLv.length, 1);
+  const merges = [], top = aoa.length;
+  const merge = (r, c, rows, cols) => { if (rows > 1 || cols > 1) merges.push({ s: { r, c }, e: { r: r + rows - 1, c: c + cols - 1 } }); };
+
+  const cFD = firstDiff(colItems.map(c => c.t)), rFD = firstDiff(rowItems.map(r => r.t));
+  for (let L = 0; L < nCH; L++) {
+    const row = new Array(nRH + colItems.length).fill(null);
+    row[0] = colLv[L] ? levelName(colLv[L]) : "";
+    merge(top + L, 0, 1, nRH);
+    const runs = runLens(cFD, L);
+    for (let c = 0; c < colItems.length; c++) {
+      if (!runs[c]) continue;
+      row[nRH + c] = colLv.length ? text(colLv, colItems[c], L) : "";
+      merge(top + L, nRH + c, 1, runs[c]);
+    }
+    aoa.push(row);
+  }
+  aoa.push(rowLv.map(levelName));
+  const rRuns = rowLv.map((_, i) => runLens(rFD, i));
+  rowItems.forEach((it, r) => {
+    const row = [];
+    const at = aoa.length;
+    for (let i = 0; i < nRH; i++) {
+      if (!rowLv.length) { row.push(null); continue; }
+      const n = layout.grouped ? rRuns[i][r] : 1;
+      row.push(n ? text(rowLv, it, i) : null);
+      if (n) merge(at, i, n, 1);
+    }
+    for (const c of colItems) {
+      const cell = g.cell(it, c);
+      const mi = rowLv.includes(MEAS) ? it.t[rowLv.indexOf(MEAS)] : colLv.includes(MEAS) ? c.t[colLv.indexOf(MEAS)] : -1;
+      const meas = mi >= 0 && g.vis[mi];
+      const fmt = meas ? g.fmtOf(mi) : null;
+      row.push(typeof cell.s === "number" && isFinite(cell.s) ? { t: "n", v: cell.s, z: (fmt && fmt.xl) || "General" } : cell.f || null);
+    }
+    aoa.push(row);
+  });
+
+  const ws = XLSX.utils.aoa_to_sheet(aoa);
+  ws["!merges"] = merges;
+  const width = i => Math.min(60, Math.max(8, ...aoa.slice(top).map(r => {
+    const v = r[i]; return v == null ? 0 : String(typeof v === "object" ? (v.v ?? "") : v).length + 2;
+  })));
+  ws["!cols"] = Array.from({ length: nRH + colItems.length }, (_, i) => ({ wch: width(i) }));
+  return ws;
 }
 $("btnExport").onclick = exportExcel;
 
@@ -2553,7 +2643,7 @@ function zones(kind) {
       ? { zone: "values", dir: "none", rect: wrap.getBoundingClientRect(), hl: [], items: [] } : null;
     return [shelf("values"), sideZone, gridZone].filter(Boolean);
   }
-  out.push(shelf("cols"), shelf("rows"), sideZone);
+  out.push(shelf("cols"), shelf("rows"), kind === "dim" ? shelf("pages") : null, sideZone);
 
   // In the grid: the header area above the row-label row takes columns;
   // the row-header area on the left takes rows.
@@ -2638,7 +2728,7 @@ document.addEventListener("keydown", e => {
     else if (e.key === "ArrowRight" && i < list.length - 1) { e.preventDefault(); moveMeasure(id, list[i + 2] || null); refocus(); }
     return;
   }
-  const zone = layout.rows.includes(id) ? "rows" : layout.cols.includes(id) ? "cols" : "avail";
+  const zone = layout.rows.includes(id) ? "rows" : layout.cols.includes(id) ? "cols" : layout.pages.includes(id) ? "pages" : "avail";
   if (zone === "avail") {
     if (e.key === "ArrowUp") { e.preventDefault(); moveField(id, "cols", null); refocus(); }
     else if (e.key === "ArrowDown" || e.key === "Enter") { e.preventDefault(); moveField(id, "rows", null); refocus(); }
@@ -2649,7 +2739,9 @@ document.addEventListener("keydown", e => {
   if (e.key === "ArrowLeft" && i > 0) { e.preventDefault(); moveField(id, zone, list[i - 1]); refocus(); }
   else if (e.key === "ArrowRight" && i < list.length - 1) { e.preventDefault(); moveField(id, zone, list[i + 2] || null); refocus(); }
   else if (e.key === "ArrowUp" && zone === "rows") { e.preventDefault(); moveField(id, "cols", null); refocus(); }
+  else if (e.key === "ArrowUp" && zone === "pages") { e.preventDefault(); moveField(id, "rows", null); refocus(); }
   else if (e.key === "ArrowDown" && zone === "cols") { e.preventDefault(); moveField(id, "rows", null); refocus(); }
+  else if (e.key === "ArrowDown" && zone === "rows" && id !== MEAS) { e.preventDefault(); moveField(id, "pages", null); refocus(); }
 });
 
 /* ============================================================

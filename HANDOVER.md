@@ -263,6 +263,10 @@ Status: `[ ]` open, `[x]` done. Answers to clarification questions are recorded 
 
 23. [x] **Separate row and column total metric selection.** Totals > Metrics included is a checkbox matrix with Rows/Columns per metric and separate All metrics toggles. Each axis controls its own grand totals and subtotals, so difference calculations can remain in row totals without creating blank column-total columns. At row/column total intersections, both selections apply. Sorting by column totals uses the column selection. Browser-tested independent menu toggles, legacy migration, saved-layout round trips, differences in row totals only, Measure Names at all row depths, collapsed metrics and empty selection on just one axis.
 
+24. [x] **Pages shelf (page-by).** A fourth shelf, Pages, takes dimensions (not Measure Names). One page per combination of its fields that exists in the data; a page bar above the grid (field name, prev/next, dropdown, "n of N") switches pages. Export to Excel writes one worksheet per page in one file (sheet named after the member, sanitised to Excel's 31-char rules and made unique; a title row "Field: member").
+   - `layout.pages` (saved with the layout, max 10 ids); the current page `curPage` (member-label key) is session only and survives data refreshes. `pageList()` builds the pages; `buildGrid(pageKey, keepCache)` filters `records` for the axis tuples and adds the page members to every cell's fixed dims (and to comparison partitions), so values, totals, LOD/countd and differences are computed within the page. Grand totals become page totals.
+   - Browser-tested: values per page equal the same rows with the field as outer row field (incl. subtotal = page grand total), mouse drags to/from the shelf, saved-layout round trip, export sheet names. Still to confirm inside Tableau.
+
 ### 8.0.1 To explore later: on-demand fields (no query until used)
 
 Goal: the field list shows many attributes without Tableau querying them; a field is only queried once a viewer drags it onto the grid.
