@@ -92,6 +92,9 @@
   .decs .tool:last-of-type { border-radius: 0 3px 3px 0; margin-left: -1px; }
   .decs .tool:disabled { cursor: default; }
   #decCount { padding-left: 4px; color: var(--dim-d); font-weight: 600; }
+  .split { display: inline-flex; }
+  .split .tool:first-child { border-radius: 3px 0 0 3px; }
+  .split .tool:last-child { border-radius: 0 3px 3px 0; margin-left: -1px; padding: 0 5px; }
 
   .menu {
     position: fixed; z-index: 50; min-width: 210px; padding: 4px 0; background: var(--bg);
@@ -104,6 +107,13 @@
   .menu label.disabled { opacity: .5; cursor: default; }
   .menu hr { border: 0; border-top: 1px solid var(--line); margin: 5px 0; }
   .menu .hint { padding: 2px 12px; color: var(--ink-2); font-style: italic; }
+  #exportMenu { max-width: min(280px, calc(100vw - 8px)); }
+  .menu .mi { display: flex; flex-direction: column; align-items: flex-start; gap: 1px; width: 100%; padding: 4px 12px;
+    border: 0; background: none; font: inherit; color: var(--ink); text-align: left; cursor: pointer; }
+  .menu .mi b { font-weight: 600; }
+  .menu .mi span { color: var(--ink-2); }
+  .menu .mi:hover:not(:disabled), .menu .mi:focus-visible { background: var(--band); }
+  .menu .mi:disabled { opacity: .5; cursor: default; }
   #totalsMenu { max-width: calc(100vw - 8px); overflow-y: auto; }
   #totalsMenu label { white-space: normal; overflow-wrap: anywhere; }
   .total-option { display: grid; grid-template-columns: minmax(0, 1fr) 76px; align-items: center; padding-right: 12px; }
@@ -379,10 +389,15 @@
       <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path d="M4 4h6.5v6.5H4zM8 4V1.5H1.5V8H4" fill="none" stroke="currentColor" stroke-width="1.2"/></svg>
       <span>Copy</span>
     </button>
-    <button class="tool" id="btnExport" title="Download the grid as shown as an Excel file">
-      <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path d="M6 1.5v6.5M3.3 5.5 6 8.2l2.7-2.7M1.5 10.5h9" fill="none" stroke="currentColor" stroke-width="1.3"/></svg>
-      <span>Export to Excel</span>
-    </button>
+    <span class="split" role="group" aria-label="Export">
+      <button class="tool" id="btnExport" title="Download the grid as shown as an Excel file">
+        <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path d="M6 1.5v6.5M3.3 5.5 6 8.2l2.7-2.7M1.5 10.5h9" fill="none" stroke="currentColor" stroke-width="1.3"/></svg>
+        <span>Export to Excel</span>
+      </button>
+      <button class="tool" id="btnExportMore" aria-haspopup="true" aria-expanded="false" aria-controls="exportMenu" title="More export options" aria-label="More export options">
+        <svg width="9" height="9" viewBox="0 0 12 12" aria-hidden="true"><path d="M2.5 4.5 6 8l3.5-3.5" fill="none" stroke="currentColor" stroke-width="1.6"/></svg>
+      </button>
+    </span>
     <button class="tool" id="btnFormat" hidden title="Format the grid (local preview only; in Tableau use Format Extension on the Marks card)">
       <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path d="M2 10.5 6 1.5l4 9M3.4 7.3h5.2" fill="none" stroke="currentColor" stroke-width="1.3"/></svg>
       <span>Format</span>
@@ -390,6 +405,7 @@
   </div>
   <div class="menu" id="totalsMenu" hidden></div>
   <div class="menu" id="sortMenu" hidden></div>
+  <div class="menu" id="exportMenu" hidden></div>
   <aside id="formatPanel" aria-label="Format the grid" hidden>
     <div class="fp-head">Format grid <button class="ib" data-fp="cancel" title="Close without saving" aria-label="Close">
       <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><path d="M1.5 1.5l7 7M8.5 1.5l-7 7" stroke="currentColor" stroke-width="1.4"/></svg></button></div>
@@ -829,6 +845,8 @@ function pageList() {
 
 const visibleMeasures = () => layout.measures.filter(id => !layout.hidden.includes(id) && !isOff(id)).map(id => model.measById.get(id));
 const activeLevels = (list, vis) => list.filter(id => id === MEAS ? vis.length > 0 : !isOff(id));
+// Groups that can fold (Expand rows, Export all rows) need grouped rows and two or more row fields.
+const canOutline = (rowLv = activeLevels(layout.rows, visibleMeasures())) => layout.grouped && rowLv.filter(id => id !== MEAS).length > 1;
 const levelName = id => id === MEAS ? "Measure Names" : model.dims[model.dimPos.get(id)].label;
 const totalAtEnd = key => (layout.totals.positions || {})[key] === "end" ||
   (!(key in (layout.totals.positions || {})) && layout.totals.atEnd);
@@ -982,6 +1000,14 @@ function axisItems(levels, vis, opt) {
       const out = [];
       for (const m of opt.order(L, prefix, [...groups.keys()])) {
         const p = [...prefix, m];
+        if (opt.fold && opt.fold.can(L) && opt.fold.outline) {
+          // Export all: the group's summary rows (as a closed group shows them), then every row
+          // inside it one outline level deeper. They replace this level's subtotals.
+          const inner = walk(groups.get(m), L + 1, p);
+          inner.forEach(it => { it.depth = (it.depth || 0) + 1; });
+          out.push(...totalsFor(L, p, false).map(it => ({ ...it, tot: null, fold: L })), ...inner);
+          continue;
+        }
         if (opt.fold && opt.fold.can(L) && !opt.fold.open(L, p)) {
           out.push(...totalsFor(L, p, false).map(it => ({ ...it, tot: null, fold: L })));
           continue;
@@ -1003,8 +1029,9 @@ function axisItems(levels, vis, opt) {
 
 /* Everything the screen and the export need, from the current layout.
    With fields on Pages, only that page's records are shown and every value is fixed to its members.
-   keepCache: reuse cell caches from the previous call (the export builds every page in a row). */
-function buildGrid(pageKey = curPage, keepCache = false) {
+   keepCache: reuse cell caches from the previous call (the export builds every page in a row).
+   outline: Export all rows. Every group is open and has a summary row; rows get an outline depth. */
+function buildGrid(pageKey = curPage, keepCache = false, outline = false) {
   if (!keepCache) { views = new Map(); blanked = new Set(); comparisonCells = new Map(); }
   const pages = pageList(), pageLv = activePages();
   const pageIdx = Math.max(0, pages.findIndex(p => p.key === pageKey));
@@ -1103,7 +1130,7 @@ function buildGrid(pageKey = curPage, keepCache = false) {
     }
     if (cmps.length) flatCmp = chain(cmps);
   }
-  const foldOn = layout.expand && layout.grouped && rowLv.filter(id => id !== MEAS).length > 1;
+  const foldOn = (layout.expand || outline) && canOutline(rowLv);
   const canFold = L => foldOn && rowLv[L] !== MEAS && rowLv.slice(L + 1).some(id => id !== MEAS);
   const foldKey = (L, t) => L + ":" + rowLv.slice(0, L + 1)
     .map((id, i) => id + "=" + (id === MEAS ? vis[t[i]].id : model.dims[model.dimPos.get(id)].members[t[i]])).join("|");
@@ -1117,7 +1144,7 @@ function buildGrid(pageKey = curPage, keepCache = false) {
   const rowItems = axisItems(rowLv, vis, {
     sub: rowSub, grand: layout.totals.grandRows, atEnd: L => totalAtEnd(L < 0 ? "grandRows" : rowLv[L]),
     includeMeasure: mi => includeMeasure("rows", mi), hasMeasures: hasMeasures("rows"), order: rowOrder, flatCmp,
-    fold: foldOn ? { can: canFold, open: isOpen } : null, records
+    fold: foldOn ? { can: canFold, open: isOpen, outline } : null, records
   });
   rowItems.forEach(r => { r.fx = fixedOf(rowLv, r.t); });
 
@@ -1152,6 +1179,7 @@ function buildGrid(pageKey = curPage, keepCache = false) {
     fmtOf: mi => fmts[mi] || (vis[mi] && vis[mi].fmt),
     subHidden: !!flatCmp && rowSub.size > 0,
     fold: { can: canFold, key: foldKey, anyOpen },
+    outline: outline && foldOn,
     foldOff: layout.expand && !layout.grouped && rowLv.filter(id => id !== MEAS).length > 1
   };
 }
@@ -1799,7 +1827,8 @@ function renderTotalsMenu() {
     `<div class="total-metrics"><span>Metric</span><span>Rows</span><span>Columns</span></div>` +
     metricRow(null) + measures.map(metricRow).join("");
 }
-const MENUS = { totals: ["totalsMenu", "btnTotals", () => renderTotalsMenu()], sort: ["sortMenu", "btnSort", () => renderSortMenu()] };
+const MENUS = { totals: ["totalsMenu", "btnTotals", () => renderTotalsMenu()], sort: ["sortMenu", "btnSort", () => renderSortMenu()],
+  export: ["exportMenu", "btnExportMore", () => renderExportMenu()] };
 function toggleMenu(name, open) {
   for (const [key, [menuId, btnId]] of Object.entries(MENUS)) {
     if (key === name) continue;
@@ -2464,10 +2493,11 @@ function loadXlsx() {
   });
 }
 
-async function exportExcel() {
+// all: every group expanded, with Excel outline (+/−) buttons to fold them. Otherwise the grid as shown.
+async function exportExcel(all = false) {
   if (!model || !layout) return;
-  const btn = $("btnExport");
-  btn.disabled = true;
+  const btns = [$("btnExport"), $("btnExportMore")];
+  btns.forEach(b => { b.disabled = true; });
   try {
     const XLSX = await loadXlsx();
     const title = worksheet ? worksheet.name : "Pivot Grid";
@@ -2485,20 +2515,20 @@ async function exportExcel() {
     const pages = pageList();
     if (pages.length) {
       pages.forEach((p, i) => {
-        const g = buildGrid(p.key, i > 0);
+        const g = buildGrid(p.key, i > 0, all);
         const sub = g.pageLv.map((id, j) => `${levelName(id)}: ${p.labels[j]}`).join(", ");
         XLSX.utils.book_append_sheet(wb, gridSheet(XLSX, g, [[title], [sub], ["Exported " + now.toLocaleString()], []]), sheetName(p.name));
       });
     } else {
-      XLSX.utils.book_append_sheet(wb, gridSheet(XLSX, buildGrid(), [[title], ["Exported " + now.toLocaleString()], []]), sheetName(title));
+      XLSX.utils.book_append_sheet(wb, gridSheet(XLSX, buildGrid(curPage, false, all), [[title], ["Exported " + now.toLocaleString()], []]), sheetName(title));
     }
     const day = now.toISOString().slice(0, 10);
-    XLSX.writeFile(wb, `${title.replace(/[\\/:*?"<>|]+/g, "_")}_${day}.xlsx`);
+    XLSX.writeFile(wb, `${title.replace(/[\\/:*?"<>|]+/g, "_")}_${day}${all ? "_all" : ""}.xlsx`);
   } catch (err) {
     setNotice("Export failed: " + err.message + ". Try again, or reload the sheet.", true);
     console.error(err);
   } finally {
-    btn.disabled = false;
+    btns.forEach(b => { b.disabled = false; });
   }
 }
 function gridSheet(XLSX, g, aoa) {
@@ -2522,12 +2552,23 @@ function gridSheet(XLSX, g, aoa) {
   }
   aoa.push(rowLv.map(levelName));
   const rRuns = rowLv.map((_, i) => runLens(rFD, i));
+  // Outline: a foldable level's label sits only on its group's summary rows (merged when there is one per measure),
+  // so folding a group in Excel never cuts through a merged cell.
+  const headRun = (i, r) => {
+    const same = k => rowItems[k] && rowItems[k].fold === i && rFD[k] > i;
+    if (rowItems[r].fold !== i || r > 0 && same(r)) return 0;
+    let n = 1;
+    while (same(r + n)) n++;
+    return n;
+  };
+  const rowsMeta = [];
   rowItems.forEach((it, r) => {
     const row = [];
     const at = aoa.length;
+    if (g.outline && it.depth) rowsMeta[at] = { level: Math.min(7, it.depth) };   // Excel allows 7 outline levels
     for (let i = 0; i < nRH; i++) {
       if (!rowLv.length) { row.push(null); continue; }
-      const n = layout.grouped ? rRuns[i][r] : 1;
+      const n = g.outline && g.fold.can(i) && it.t[i] >= 0 ? headRun(i, r) : layout.grouped ? rRuns[i][r] : 1;
       row.push(n ? text(rowLv, it, i) : null);
       if (n) merge(at, i, n, 1);
     }
@@ -2543,13 +2584,29 @@ function gridSheet(XLSX, g, aoa) {
 
   const ws = XLSX.utils.aoa_to_sheet(aoa);
   ws["!merges"] = merges;
+  if (g.outline) { ws["!rows"] = rowsMeta; ws["!outline"] = { above: true }; }   // summary rows sit above their group
   const width = i => Math.min(60, Math.max(8, ...aoa.slice(top).map(r => {
     const v = r[i]; return v == null ? 0 : String(typeof v === "object" ? (v.v ?? "") : v).length + 2;
   })));
   ws["!cols"] = Array.from({ length: nRH + colItems.length }, (_, i) => ({ wch: width(i) }));
   return ws;
 }
-$("btnExport").onclick = exportExcel;
+$("btnExport").onclick = () => exportExcel(false);
+function renderExportMenu() {
+  const ok = !!model && canOutline();
+  $("exportMenu").innerHTML =
+    `<button class="mi" data-export="shown"><b>Export as shown</b><span>The grid as it is on screen</span></button>` +
+    `<button class="mi" data-export="all"${ok ? "" : " disabled"}><b>Export all rows</b>` +
+    `<span>${ok ? "Every group expanded, with Excel's + and − buttons to fold them"
+      : "Needs Group rows on and two or more fields on Rows"}</span></button>`;
+}
+$("btnExportMore").onclick = () => toggleMenu("export", $("exportMenu").hidden);
+$("exportMenu").addEventListener("click", e => {
+  const b = e.target.closest("[data-export]");
+  if (!b || b.disabled) return;
+  toggleMenu("export", false);
+  exportExcel(b.dataset.export === "all");
+});
 
 function foldSide(folded) {
   $("side").classList.toggle("folded", folded);

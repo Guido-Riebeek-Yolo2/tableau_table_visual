@@ -267,6 +267,13 @@ Status: `[ ]` open, `[x]` done. Answers to clarification questions are recorded 
    - `layout.pages` (saved with the layout, max 10 ids); the current page `curPage` (member-label key) is session only and survives data refreshes. `pageList()` builds the pages; `buildGrid(pageKey, keepCache)` filters `records` for the axis tuples and adds the page members to every cell's fixed dims (and to comparison partitions), so values, totals, LOD/countd and differences are computed within the page. Grand totals become page totals.
    - Browser-tested: values per page equal the same rows with the field as outer row field (incl. subtotal = page grand total), mouse drags to/from the shelf, saved-layout round trip, export sheet names. Still to confirm inside Tableau.
 
+25. [x] **Export all rows.** A ▾ next to Export to Excel (`#btnExportMore`, `#exportMenu`) offers "Export as shown" (as before) and "Export all rows". Export all writes every group expanded, whatever is open on screen, with Excel row outlines so the +/− and 1/2/3 buttons fold them in Excel. Needs Group rows on and 2+ row fields (`canOutline()`); otherwise the option is disabled with a hint. File name gets `_all`.
+   - No extra Tableau query: all summary data is already in `model.records`; collapsed groups are only `layout.open` state.
+   - `buildGrid(pageKey, keepCache, outline = true)`: every foldable level emits its group's summary rows (the same items a closed group shows, `fold: L`) followed by its rows with `depth + 1`; these replace that level's subtotals. Grand totals stay at level 0.
+   - `gridSheet` sets `ws["!rows"][i].level` (max 7) and `ws["!outline"] = { above: true }` (summary rows above details). A foldable level's label sits only on its summary rows, not merged over the group, so folding never cuts a merged cell. Works per page with the Pages shelf.
+   - Excel opens fully expanded: SheetJS CE can't write the summary row's `collapsed` flag, so mirroring the screen's closed groups as folded Excel groups was left out (Excel may show the wrong +/− on pre-hidden rows).
+   - Browser-tested (demo data, Edge headless): collapsed screen → all rows exported, 3 row dims with Measure Names on rows (2 outline levels), subtotals + grand total, Pages (one outlined sheet per page), disabled state with grouping off. Still to confirm inside Tableau and in desktop Excel.
+
 ### 8.0.1 To explore later: on-demand fields (no query until used)
 
 Goal: the field list shows many attributes without Tableau querying them; a field is only queried once a viewer drags it onto the grid.
