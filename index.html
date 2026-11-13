@@ -390,7 +390,7 @@
       <span>Copy</span>
     </button>
     <span class="split" role="group" aria-label="Export">
-      <button class="tool" id="btnExport" title="Download the grid as shown as an Excel file">
+      <button class="tool" id="btnExport" title="Download all rows as an Excel file">
         <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path d="M6 1.5v6.5M3.3 5.5 6 8.2l2.7-2.7M1.5 10.5h9" fill="none" stroke="currentColor" stroke-width="1.3"/></svg>
         <span>Export to Excel</span>
       </button>
@@ -1348,7 +1348,8 @@ const sortBtn = (attrs, dir, title, n) =>
 
 function renderPageBar(g) {
   $("pageBar").hidden = !g.page;
-  $("btnExport").title = g.page ? "Download every page as its own worksheet in one Excel file" : "Download the grid as shown as an Excel file";
+  $("btnExport").title = (canOutline(g.rowLv) ? "Download all rows, every group expanded, with Excel's + and − buttons to fold them"
+    : "Download the grid as shown as an Excel file") + (g.page ? ". Every page becomes its own worksheet." : "");
   if (!g.page) return;
   $("pageField").textContent = g.pageLv.map(levelName).join(" / ");
   $("pageSelect").innerHTML = g.pages.map((p, i) => `<option value="${i}"${i === g.pageIdx ? " selected" : ""}>${esc(p.name)}</option>`).join("");
@@ -2591,14 +2592,15 @@ function gridSheet(XLSX, g, aoa) {
   ws["!cols"] = Array.from({ length: nRH + colItems.length }, (_, i) => ({ wch: width(i) }));
   return ws;
 }
-$("btnExport").onclick = () => exportExcel(false);
+// The main button exports all rows; where nothing can fold (Group rows off, one row field) that equals the grid as shown.
+$("btnExport").onclick = () => exportExcel(!!model && !!layout && canOutline());
 function renderExportMenu() {
   const ok = !!model && canOutline();
   $("exportMenu").innerHTML =
-    `<button class="mi" data-export="shown"><b>Export as shown</b><span>The grid as it is on screen</span></button>` +
     `<button class="mi" data-export="all"${ok ? "" : " disabled"}><b>Export all rows</b>` +
-    `<span>${ok ? "Every group expanded, with Excel's + and − buttons to fold them"
-      : "Needs Group rows on and two or more fields on Rows"}</span></button>`;
+    `<span>${ok ? "Default. Every group expanded, with Excel's + and − buttons to fold them"
+      : "Needs Group rows on and two or more fields on Rows"}</span></button>` +
+    `<button class="mi" data-export="shown"><b>Export as shown</b><span>Only what is on screen, collapsed groups stay collapsed</span></button>`;
 }
 $("btnExportMore").onclick = () => toggleMenu("export", $("exportMenu").hidden);
 $("exportMenu").addEventListener("click", e => {
